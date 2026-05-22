@@ -3,6 +3,7 @@ import { STButton, STTextarea } from 'sillytavern-utils-lib/components/react';
 import type { ConnectionProfile } from 'sillytavern-utils-lib/types/profiles';
 import { st_echo } from 'sillytavern-utils-lib/config';
 import {
+  clearRuntimeConnectionProfiles,
   createConnectionProfileFromDraft,
   getConnectionProfiles,
   loadApiSettingsDraft,
@@ -10,6 +11,7 @@ import {
   resolveSelectedApiGroup,
   saveConnectionProfile,
   saveResponsePreset,
+  setRuntimeConnectionProfile,
 } from '../api-settings.js';
 import type { ApiSettingsDraft } from '../api-settings.js';
 // @ts-ignore SillyTavern runtime module resolved from the built extension path.
@@ -275,6 +277,7 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
         presetApiId: resolvePresetApiId(profile),
         selectedApiGroup: resolveSelectedApiGroup(profile),
       };
+      setRuntimeConnectionProfile(profile, profileId);
       setProfileJson(stringify(profile));
       return nextDraft;
     });
@@ -284,6 +287,7 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
     if (!draft) return;
     try {
       const profile = parseJson<ConnectionProfile>(profileJson, 'Profile JSON');
+      setRuntimeConnectionProfile(profile, profileId);
       setDraft((current) => {
         if (!current) return current;
         return {
@@ -315,6 +319,8 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
     try {
       const profile = parseJson<ConnectionProfile>(profileJson, 'Profile JSON');
       const savedProfile = await saveConnectionProfile(profile);
+      clearRuntimeConnectionProfiles(profileId);
+      clearRuntimeConnectionProfiles(savedProfile.id);
       const nextDraft = loadApiSettingsDraft(savedProfile.id);
       setDraft(nextDraft);
       setProfileJson(stringify(nextDraft?.profile));

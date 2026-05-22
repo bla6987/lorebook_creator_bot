@@ -5,6 +5,7 @@ import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { st_createWorldInfoEntry } from 'sillytavern-utils-lib/config';
 import { ExtensionSettings, MessageRole } from './settings.js';
 import { RegexScriptData } from 'sillytavern-utils-lib/types/regex';
+import { getRuntimeConnectionProfile, withRuntimeConnectionProfile } from './api-settings.js';
 
 import * as Handlebars from 'handlebars';
 
@@ -50,8 +51,8 @@ export async function runWorldInfoRecommendation({
   if (!profileId) {
     throw new Error('No connection profile selected.');
   }
-  const context = SillyTavern.getContext();
-  const profile = context.extensionSettings.connectionManager?.profiles?.find((profile) => profile.id === profileId);
+
+  const profile = getRuntimeConnectionProfile(profileId);
   if (!profile) {
     throw new Error(`Connection profile with ID "${profileId}" not found.`);
   }
@@ -60,6 +61,14 @@ export async function runWorldInfoRecommendation({
   if (!selectedApi) {
     throw new Error(`Could not determine API for profile "${profile.name}".`);
   }
+
+  const effectiveBuildPromptOptions: BuildPromptOptions = {
+    ...buildPromptOptions,
+    presetName: profile.preset,
+    contextName: profile.context,
+    instructName: profile.instruct,
+    syspromptName: profile.sysprompt,
+  };
 
   const templateData: Record<string, any> = {};
   templateData['user'] = '{{user}}'; // ST going to replace this with the actual user name
@@ -125,7 +134,7 @@ export async function runWorldInfoRecommendation({
     for (const mainContext of mainContextList) {
       // Chat history is exception, since it is not a template
       if (mainContext.promptName === 'chatHistory') {
-        messages.push(...(await buildPrompt(selectedApi, buildPromptOptions)).result);
+        messages.push(...(await buildPrompt(selectedApi, effectiveBuildPromptOptions)).result);
         continue;
       }
 
@@ -170,10 +179,8 @@ export async function runWorldInfoRecommendation({
 
   // console.log("Sending messages:", messages);
 
-  const response = (await globalContext.ConnectionManagerRequestService.sendRequest(
-    profileId,
-    messages,
-    maxResponseToken,
+  const response = (await withRuntimeConnectionProfile(profileId, async (requestProfileId) =>
+    globalContext.ConnectionManagerRequestService.sendRequest(requestProfileId, messages, maxResponseToken),
   )) as ExtractedData;
 
   // console.log("Received content:", response.content);

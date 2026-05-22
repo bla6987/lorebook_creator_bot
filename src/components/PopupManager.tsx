@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Popup } from 'sillytavern-utils-lib/components/react';
 import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { MainPopup } from './MainPopup.js';
-import { restoreConnectionState, snapshotConnectionState } from '../api-settings.js';
+import { clearRuntimeConnectionProfiles, restoreConnectionState, snapshotConnectionState } from '../api-settings.js';
 import type { ConnectionStateSnapshot } from '../api-settings.js';
 
 export const PopupManager = () => {
@@ -33,8 +33,12 @@ export const PopupManager = () => {
         large: true,
         wide: true,
         onClose: async () => {
-          await restoreConnectionState(connectionSnapshot);
-          setConnectionSnapshot(null);
+          try {
+            await restoreConnectionState(connectionSnapshot);
+          } finally {
+            clearRuntimeConnectionProfiles();
+            setConnectionSnapshot(null);
+          }
         },
       }}
     />

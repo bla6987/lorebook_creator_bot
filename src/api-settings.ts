@@ -19,6 +19,7 @@ export interface ConnectionStateSnapshot {
 }
 
 const clone = <T>(value: T): T => structuredClone(value ?? ({} as T));
+const runtimeConnectionProfiles = new Map<string, ConnectionProfile>();
 
 const replaceObjectContents = (target: Record<string, any>, source: Record<string, any>) => {
   for (const key of Object.keys(target)) {
@@ -38,6 +39,61 @@ export function getConnectionProfile(profileId?: string): ConnectionProfile | un
   return getProfiles().find((profile) => profile.id === profileId);
 }
 
+export function getRuntimeConnectionProfile(profileId?: string): ConnectionProfile | undefined {
+  if (!profileId) return undefined;
+
+  const profile = getConnectionProfile(profileId);
+  const runtimeProfile = runtimeConnectionProfiles.get(profileId);
+  if (!profile || !runtimeProfile) return profile;
+
+  return { ...clone(runtimeProfile), id: profileId };
+}
+
+export function setRuntimeConnectionProfile(profile: ConnectionProfile, profileId = profile.id): void {
+  if (!profileId) return;
+  runtimeConnectionProfiles.set(profileId, { ...clone(profile), id: profileId });
+}
+
+export function clearRuntimeConnectionProfiles(profileId?: string): void {
+  if (profileId) {
+    runtimeConnectionProfiles.delete(profileId);
+    return;
+  }
+
+  runtimeConnectionProfiles.clear();
+}
+
+export async function withRuntimeConnectionProfile<T>(
+  profileId: string,
+  callback: (requestProfileId: string, profile: ConnectionProfile) => Promise<T>,
+): Promise<T> {
+  const profile = getRuntimeConnectionProfile(profileId);
+  if (!profile) {
+    throw new Error(`Connection profile with ID "${profileId}" not found.`);
+  }
+
+  if (!runtimeConnectionProfiles.has(profileId)) {
+    return callback(profileId, profile);
+  }
+
+  const profiles = getProfiles();
+  const temporaryProfile = {
+    ...clone(profile),
+    id: `world-info-recommender-${context.uuidv4()}`,
+    name: profile.name ? `${profile.name} (World Info Recommender draft)` : 'World Info Recommender draft',
+  };
+
+  profiles.push(temporaryProfile);
+  try {
+    return await callback(temporaryProfile.id, temporaryProfile);
+  } finally {
+    const temporaryIndex = profiles.findIndex((existingProfile) => existingProfile.id === temporaryProfile.id);
+    if (temporaryIndex !== -1) {
+      profiles.splice(temporaryIndex, 1);
+    }
+  }
+}
+
 export function resolvePresetApiId(profile: ConnectionProfile): 'openai' | 'textgenerationwebui' {
   const apiMap = profile.api ? context.CONNECT_API_MAP[profile.api] : undefined;
   return apiMap?.selected === 'openai' ? 'openai' : 'textgenerationwebui';
@@ -52,7 +108,7 @@ export function getPresetManager(apiId: 'openai' | 'textgenerationwebui') {
 }
 
 export function loadApiSettingsDraft(profileId?: string): ApiSettingsDraft | undefined {
-  const profile = getConnectionProfile(profileId);
+  const profile = getRuntimeConnectionProfile(profileId);
   if (!profile) return undefined;
 
   const presetApiId = resolvePresetApiId(profile);
@@ -85,6 +141,7 @@ export async function saveConnectionProfile(updatedProfile: ConnectionProfile): 
   profiles[index] = clone(updatedProfile);
   context.saveSettingsDebounced();
   await context.eventSource.emit(runtimeContext.eventTypes.CONNECTION_PROFILE_UPDATED, oldProfile, profiles[index]);
+  clearRuntimeConnectionProfiles(updatedProfile.id);
   return profiles[index];
 }
 
@@ -156,27 +213,22 @@ export async function restoreConnectionState(snapshot?: ConnectionStateSnapshot 
   try {
     const selectedProfile = snapshot.selectedProfile;
     const profileStillExists = selectedProfile ? !!getConnectionProfile(selectedProfile) : false;
-    const profileCommand = context.SlashCommandParser?.commands?.profile;
-
-    if (profileCommand) {
-      if (profileStillExists && selectedProfile) {
-        const profile = getConnectionProfile(selectedProfile);
-        await profileCommand.callback({ await: 'true', timeout: '2000' }, profile?.name ?? '');
-      } else {
-        await profileCommand.callback({ await: 'false' }, '<None>');
-      }
-    } else if (runtimeContext.extensionSettings.connectionManager) {
-      runtimeContext.extensionSettings.connectionManager.selectedProfile = profileStillExists ? selectedProfile : '';
-    }
+    const restoredProfileId = selectedProfile && profileStillExists ? selectedProfile : null;
 
     replaceObjectContents(context.chatCompletionSettings, snapshot.chatCompletionSettings);
     replaceObjectContents(context.textCompletionSettings, snapshot.textCompletionSettings);
     replaceObjectContents(context.powerUserSettings, snapshot.powerUserSettings);
 
     if (runtimeContext.extensionSettings.connectionManager) {
-      runtimeContext.extensionSettings.connectionManager.selectedProfile = profileStillExists ? selectedProfile : '';
+      runtimeContext.extensionSettings.connectionManager.selectedProfile = restoredProfileId;
     }
 
+    const profileSelect = document.getElementById('connection_profiles');
+    if (profileSelect instanceof HTMLSelectElement) {
+      profileSelect.value = restoredProfileId ?? '';
+    }
+
+    clearRuntimeConnectionProfiles();
     context.saveSettingsDebounced();
   } catch (error) {
     console.error('[WorldInfoRecommender] Failed to restore SillyTavern API settings:', error);

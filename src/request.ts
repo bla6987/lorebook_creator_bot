@@ -6,6 +6,7 @@ import { PromptEngineeringMode, settingsManager } from './settings.js';
 import * as Handlebars from 'handlebars';
 import { schemaToExample } from './schema-to-example.js';
 import { parseResponse } from './parsers.js';
+import { withRuntimeConnectionProfile } from './api-settings.js';
 
 const generator = new Generator();
 
@@ -22,51 +23,53 @@ async function makeRequest(
   const stream = !overridePayload.json_schema && !!streamCallbacks;
   let previousText = '';
 
-  return new Promise((resolve, reject) => {
-    const abortController = new AbortController();
+  return withRuntimeConnectionProfile(profileId, async (requestProfileId) => {
+    return new Promise<ExtractedData | undefined>((resolve, reject) => {
+      const abortController = new AbortController();
 
-    const combinedSignal = signal ?? abortController.signal;
-    if (signal) {
-      signal.addEventListener('abort', () => abortController.abort(), { once: true });
-    }
+      const combinedSignal = signal ?? abortController.signal;
+      if (signal) {
+        signal.addEventListener('abort', () => abortController.abort(), { once: true });
+      }
 
-    generator.generateRequest(
-      {
-        profileId,
-        prompt,
-        maxTokens,
-        custom: { stream, signal: combinedSignal },
-        overridePayload,
-      },
-      {
-        abortController,
-        onEntry: stream
-          ? async (_requestId, streamData) => {
-              const text = (streamData as StreamResponse).text;
-              if (text && streamCallbacks) {
-                await streamCallbacks.onStream({ chunk: text.slice(previousText.length), fullText: text });
-                previousText = text;
-              }
-            }
-          : undefined,
-        onFinish: (_requestId, data, error) => {
-          if (combinedSignal.aborted) {
-            return reject(new DOMException('Request aborted by user', 'AbortError'));
-          }
-          if (error) return reject(error);
-
-          if (data === undefined && error === undefined) {
-            if (stream) {
-              return resolve({ content: previousText });
-            }
-            return reject(new DOMException('Request aborted by user', 'AbortError'));
-          }
-          if (!data) reject(new Error('No data received from LLM'));
-          if (error) return reject(error);
-          return streamCallbacks ? resolve({ content: previousText }) : resolve(data as ExtractedData);
+      generator.generateRequest(
+        {
+          profileId: requestProfileId,
+          prompt,
+          maxTokens,
+          custom: { stream, signal: combinedSignal },
+          overridePayload,
         },
-      },
-    );
+        {
+          abortController,
+          onEntry: stream
+            ? async (_requestId, streamData) => {
+                const text = (streamData as StreamResponse).text;
+                if (text && streamCallbacks) {
+                  await streamCallbacks.onStream({ chunk: text.slice(previousText.length), fullText: text });
+                  previousText = text;
+                }
+              }
+            : undefined,
+          onFinish: (_requestId, data, error) => {
+            if (combinedSignal.aborted) {
+              return reject(new DOMException('Request aborted by user', 'AbortError'));
+            }
+            if (error) return reject(error);
+
+            if (data === undefined && error === undefined) {
+              if (stream) {
+                return resolve({ content: previousText });
+              }
+              return reject(new DOMException('Request aborted by user', 'AbortError'));
+            }
+            if (!data) return reject(new Error('No data received from LLM'));
+            if (error) return reject(error);
+            return streamCallbacks ? resolve({ content: previousText }) : resolve(data as ExtractedData);
+          },
+        },
+      );
+    });
   });
 }
 
