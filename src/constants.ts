@@ -120,30 +120,39 @@ Content: {{#if entry.content}}{{entry.content}}{{else}}*No content*{{/if}}
 {{/each}}
 {{/is_not_empty}}`;
 
-export const DEFAULT_XML_DESCRIPTION = `If you are creating a new entry you should write it like this:
-\`\`\`xml
-<lorebooks>
-    <entry>
-        <worldName>World 1</worldName>
-        <name>Book 1</name>
-        <triggers>word1,word2</triggers>
-        <content>Content of book 1</content>
-    </entry>
-</lorebooks>
-\`\`\`
+export const DEFAULT_XML_DESCRIPTION = `## RESPONSE FORMAT (CRITICAL)
 
-If you are updating an existing entry you should specify the id of the entry. Like this:
-\`\`\`xml
+Your entire response MUST be a single \`<lorebooks>\` XML block and nothing else. Any deviation breaks the downstream parser.
+
+**Hard rules:**
+1. Output ONLY the \`<lorebooks>...</lorebooks>\` block. No prose, no headings, no markdown, no commentary before or after.
+2. Do NOT wrap the XML in code fences (no \`\`\`xml). Emit the raw tags directly.
+3. Every \`<entry>\` MUST contain \`<worldName>\`, \`<name>\`, \`<triggers>\`, and \`<content>\` in that order. Include \`<id>\` ONLY when updating an existing entry.
+4. \`<triggers>\` is a comma-separated list of keywords.
+5. If you have nothing to add, return \`<lorebooks></lorebooks>\` — still no prose.
+
+**Creating a new entry:**
 <lorebooks>
     <entry>
         <worldName>World 1</worldName>
-        <id>15</id> // Id should be the id of the entry
         <name>Book 1</name>
         <triggers>word1,word2</triggers>
         <content>Content of book 1</content>
     </entry>
 </lorebooks>
-\`\`\``;
+
+**Updating an existing entry** (include \`<id>\` matching the entry you are revising):
+<lorebooks>
+    <entry>
+        <worldName>World 1</worldName>
+        <id>15</id>
+        <name>Book 1</name>
+        <triggers>word1,word2</triggers>
+        <content>Content of book 1</content>
+    </entry>
+</lorebooks>
+
+You may include multiple \`<entry>\` blocks inside a single \`<lorebooks>\` element. Begin your response with \`<lorebooks>\` immediately.`;
 
 export const DEFAULT_TASK_DESCRIPTION = `## Rules
 - Don't suggest already existing or suggested entries.

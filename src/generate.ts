@@ -180,7 +180,7 @@ export async function runWorldInfoRecommendation({
 
   const assistantMessageForContinue = messages.find((m) => m.role === 'assistant');
   if (!response.content) {
-    return {};
+    throw new Error('AI returned an empty response. Check your connection profile, model, and console for details.');
   }
   let parsedEntries = parseXMLOwn(response.content, {
     // Only merge with previous content if we are in 'continue' mode.
@@ -190,7 +190,12 @@ export async function runWorldInfoRecommendation({
 
   if (Object.keys(parsedEntries).length === 0) {
     console.error('AI response received but no entries were parsed. Raw content:', String(response.content));
-    return {};
+    const preview = String(response.content).trim().slice(0, 200);
+    throw new Error(
+      `AI responded but no <lorebooks> XML was found — the model likely ignored the format instructions. ` +
+        `Try a stronger model or strengthen the Response Rules prompt. ` +
+        `Raw response preview: "${preview}${response.content.length > 200 ? '…' : ''}" (see console for full output).`,
+    );
   }
 
   // Set "key" and "comment" if missing, using the passed entriesGroupByWorldName
