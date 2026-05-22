@@ -181,6 +181,21 @@ dialog:has(.select-entries-popup) {
         gap: 8px;
     }
 
+    .model-picker-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+
+        .text_pole {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .menu_button {
+            flex: 0 0 auto;
+        }
+    }
+
     .api-settings-actions {
         flex-wrap: wrap;
         justify-content: flex-start;

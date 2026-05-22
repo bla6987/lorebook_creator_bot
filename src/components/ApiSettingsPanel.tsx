@@ -37,14 +37,113 @@ const getApiOptions = () =>
 
 const getModelValue = (profile: ConnectionProfile): string => profile.model ?? '';
 
+interface ModelOption {
+  value: string;
+  label: string;
+  group?: string;
+}
+
+const CHAT_MODEL_SELECTORS: Record<string, string> = {
+  openai: '#model_openai_select',
+  claude: '#model_claude_select',
+  openrouter: '#model_openrouter_select',
+  ai21: '#model_ai21_select',
+  makersuite: '#model_google_select',
+  vertexai: '#model_vertexai_select',
+  mistralai: '#model_mistralai_select',
+  cohere: '#model_cohere_select',
+  perplexity: '#model_perplexity_select',
+  groq: '#model_groq_select',
+  siliconflow: '#model_siliconflow_select',
+  minimax: '#model_minimax_select',
+  electronhub: '#model_electronhub_select',
+  chutes: '#model_chutes_select',
+  nanogpt: '#model_nanogpt_select',
+  deepseek: '#model_deepseek_select',
+  aimlapi: '#model_aimlapi_select',
+  xai: '#model_xai_select',
+  pollinations: '#model_pollinations_select',
+  moonshot: '#model_moonshot_select',
+  fireworks: '#model_fireworks_select',
+  cometapi: '#model_cometapi_select',
+  zai: '#model_zai_select',
+  workers_ai: '#model_workers_ai_select',
+};
+
+const TEXT_MODEL_SELECTORS: Record<string, string> = {
+  mancer: '#mancer_model',
+  togetherai: '#model_togetherai_select',
+  openrouter: '#openrouter_model',
+  infermaticai: '#model_infermaticai_select',
+  dreamgen: '#model_dreamgen_select',
+  featherless: '#featherless_model',
+  vllm: '#vllm_model',
+  aphrodite: '#aphrodite_model',
+  llamacpp: '#llamacpp_model',
+  ollama: '#ollama_model',
+  tabby: '#tabby_model',
+};
+
+const extractSelectOptions = (selector?: string): ModelOption[] => {
+  if (!selector) return [];
+  const select = document.querySelector(selector);
+  if (!(select instanceof HTMLSelectElement)) return [];
+
+  const options: ModelOption[] = [];
+  for (const option of Array.from(select.options)) {
+    const value = option.value;
+    const label = option.textContent?.trim() || value;
+    if (!value || label.includes('-- Connect to the API --')) continue;
+    const groupElement = option.parentElement;
+    const group = groupElement instanceof HTMLOptGroupElement ? groupElement.label : undefined;
+    options.push({ value, label, group });
+  }
+  return options;
+};
+
+const getModelSelector = (profile: ConnectionProfile): string | undefined => {
+  const apiMap = profile.api ? (context.CONNECT_API_MAP[profile.api] as any) : undefined;
+  if (!apiMap) return undefined;
+  if (apiMap.selected === 'openai') return CHAT_MODEL_SELECTORS[apiMap.source];
+  if (apiMap.selected === 'textgenerationwebui') return TEXT_MODEL_SELECTORS[apiMap.type];
+  return undefined;
+};
+
+const getModelOptions = (profile: ConnectionProfile): ModelOption[] => {
+  const options = extractSelectOptions(getModelSelector(profile));
+  const currentModel = getModelValue(profile);
+  if (currentModel && !options.some((option) => option.value === currentModel)) {
+    return [{ value: currentModel, label: `${currentModel} (current)` }, ...options];
+  }
+  return options;
+};
+
+const groupModelOptions = (options: ModelOption[]) => {
+  const ungrouped = options.filter((option) => !option.group);
+  const grouped = new Map<string, ModelOption[]>();
+  for (const option of options) {
+    if (!option.group) continue;
+    const group = grouped.get(option.group) ?? [];
+    group.push(option);
+    grouped.set(option.group, group);
+  }
+  return { ungrouped, grouped: Array.from(grouped.entries()) };
+};
+
 export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfileSelected }) => {
   const [draft, setDraft] = useState<ApiSettingsDraft | undefined>(() => loadApiSettingsDraft(profileId));
   const [profileJson, setProfileJson] = useState(() => stringify(draft?.profile));
   const [presetJson, setPresetJson] = useState(() => stringify(draft?.preset));
   const [showRaw, setShowRaw] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [modelOptionsVersion, setModelOptionsVersion] = useState(0);
 
   const apiOptions = useMemo(() => getApiOptions(), []);
+  const modelOptions = useMemo(
+    () => (draft ? getModelOptions(draft.profile) : []),
+    [draft?.profile.api, draft?.profile.model, modelOptionsVersion],
+  );
+  const groupedModelOptions = useMemo(() => groupModelOptions(modelOptions), [modelOptions]);
 
   const reloadDraft = useCallback((nextProfileId: string) => {
     const nextDraft = loadApiSettingsDraft(nextProfileId);
@@ -209,7 +308,10 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
           <select
             className="text_pole"
             value={draft.profile.api ?? ''}
-            onChange={(event) => updateDraftProfile('api', event.target.value)}
+            onChange={(event) => {
+              updateDraftProfile('api', event.target.value);
+              setModelOptionsVersion((version) => version + 1);
+            }}
           >
             <option value="">Select API</option>
             {apiOptions.map(([api]) => (
@@ -229,11 +331,43 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
         </label>
         <label>
           Model
-          <input
-            className="text_pole"
-            value={getModelValue(draft.profile)}
-            onChange={(event) => updateDraftProfile('model', event.target.value)}
-          />
+          <div className="model-picker-row">
+            {modelOptions.length > 0 ? (
+              <select
+                className="text_pole"
+                value={getModelValue(draft.profile)}
+                onFocus={() => setModelOptionsVersion((version) => version + 1)}
+                onChange={(event) => updateDraftProfile('model', event.target.value)}
+              >
+                {groupedModelOptions.ungrouped.map((option) => (
+                  <option key={`models:${option.value}`} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+                {groupedModelOptions.grouped.map(([group, options]) => (
+                  <optgroup key={group} label={group}>
+                    {options.map((option) => (
+                      <option key={`${group}:${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="text_pole"
+                value={getModelValue(draft.profile)}
+                onFocus={() => setModelOptionsVersion((version) => version + 1)}
+                onChange={(event) => updateDraftProfile('model', event.target.value)}
+              />
+            )}
+            <STButton
+              className="menu_button fa-solid fa-rotate"
+              title="Refresh model list"
+              onClick={() => setModelOptionsVersion((version) => version + 1)}
+            />
+          </div>
         </label>
         <label>
           API URL
