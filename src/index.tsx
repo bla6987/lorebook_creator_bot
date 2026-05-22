@@ -5,16 +5,13 @@ import { WorldInfoRecommenderSettings } from './components/Settings.js';
 import { st_echo } from 'sillytavern-utils-lib/config';
 import { PopupManager } from './components/PopupManager.js';
 import { initializeCommands } from './commands.js';
+import settingsHtml from '../templates/settings.html?raw';
 import './styles/main.scss';
 
 const globalContext = SillyTavern.getContext();
 
 export async function init() {
   // --- Settings Panel Rendering ---
-  const settingsHtml: string = await globalContext.renderExtensionTemplateAsync(
-    `third-party/${extensionName}`,
-    'templates/settings',
-  );
   document.querySelector('#extensions_settings')!.insertAdjacentHTML('beforeend', settingsHtml);
 
   const settingsRootElement = document.createElement('div');
