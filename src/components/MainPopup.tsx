@@ -30,6 +30,7 @@ import { useForceUpdate } from '../hooks/useForceUpdate.js';
 import { SelectEntriesPopup, SelectEntriesPopupRef } from './SelectEntriesPopup.js';
 import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { ReviseSessionManager } from './ReviseSessionManager.js';
+import { ApiSettingsPanel } from './ApiSettingsPanel.js';
 
 if (!Handlebars.helpers['join']) {
   Handlebars.registerHelper('join', function (array: any, separator: any) {
@@ -669,9 +670,16 @@ export const MainPopup: FC = () => {
             <div className="card">
               <h3>Connection Profile</h3>
               <STConnectionProfileSelect
+                key={settings.profileId || 'no-profile'}
                 initialSelectedProfileId={settings.profileId}
                 // @ts-ignore
                 onChange={(profile) => updateSetting('profileId', profile?.id)}
+              />
+            </div>
+            <div className="card">
+              <ApiSettingsPanel
+                profileId={settings.profileId}
+                onProfileSelected={(id) => updateSetting('profileId', id)}
               />
             </div>
             <div className="card">
