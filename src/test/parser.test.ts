@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { parseResponse } from '../parsers.js';
+import { parseXMLOwn } from '../xml.js';
 
 const mockSchema = {
   type: 'object',
@@ -168,5 +169,93 @@ describe('parseResponse', () => {
       expect(Array.isArray(result.add)).toBe(true);
       expect(result.add[0].name).toBe('N1');
     });
+  });
+});
+
+describe('parseXMLOwn', () => {
+  const baseXml = `
+<lorebooks>
+  <entry>
+    <worldName>Earth</worldName>
+    <name>Capital</name>
+    <triggers>capital,city</triggers>
+    <content>Paris is the capital.</content>
+  </entry>
+</lorebooks>`;
+
+  test('parses plain lorebooks XML', () => {
+    const result = parseXMLOwn(baseXml);
+    expect(result.Earth).toHaveLength(1);
+    expect(result.Earth[0].comment).toBe('Capital');
+    expect(result.Earth[0].content).toBe('Paris is the capital.');
+  });
+
+  test('strips <think> blocks emitted by reasoning models', () => {
+    const input = `<think>Let me consider what to add...
+The user wants a city entry.</think>\n${baseXml}`;
+    const result = parseXMLOwn(input);
+    expect(result.Earth).toHaveLength(1);
+    expect(result.Earth[0].comment).toBe('Capital');
+  });
+
+  test('strips <thinking> blocks', () => {
+    const input = `<thinking>planning...</thinking>${baseXml}`;
+    const result = parseXMLOwn(input);
+    expect(result.Earth).toHaveLength(1);
+  });
+
+  test('strips <reasoning> blocks', () => {
+    const input = `<reasoning>step 1 ... step 2</reasoning>${baseXml}`;
+    const result = parseXMLOwn(input);
+    expect(result.Earth).toHaveLength(1);
+  });
+
+  test('extracts <lorebooks> region from surrounding prose', () => {
+    const input = `Sure! Here are my suggestions:\n\n${baseXml}\n\nLet me know if you want more.`;
+    const result = parseXMLOwn(input);
+    expect(result.Earth).toHaveLength(1);
+  });
+
+  test('tolerates singular <lorebook> root', () => {
+    const input = `
+<lorebook>
+  <entry>
+    <worldName>Mars</worldName>
+    <name>Olympus</name>
+    <triggers>olympus,mons</triggers>
+    <content>Largest volcano.</content>
+  </entry>
+</lorebook>`;
+    const result = parseXMLOwn(input);
+    expect(result.Mars).toHaveLength(1);
+    expect(result.Mars[0].comment).toBe('Olympus');
+  });
+
+  test('strips ```xml code fences', () => {
+    const input = '```xml\n' + baseXml + '\n```';
+    const result = parseXMLOwn(input);
+    expect(result.Earth).toHaveLength(1);
+  });
+
+  test('does not crash when a single entry lacks a <content> tag', () => {
+    const input = `
+<lorebooks>
+  <entry>
+    <worldName>Earth</worldName>
+    <name>Bare</name>
+    <triggers>bare</triggers>
+  </entry>
+</lorebooks>`;
+    expect(() => parseXMLOwn(input)).not.toThrow();
+    const result = parseXMLOwn(input);
+    expect(result.Earth).toHaveLength(1);
+    expect(result.Earth[0].comment).toBe('Bare');
+    // Missing <content> should default to empty string, not undefined
+    expect(result.Earth[0].content).toBe('');
+  });
+
+  test('returns empty record when <lorebooks> has no entries', () => {
+    const result = parseXMLOwn('<lorebooks></lorebooks>');
+    expect(result).toEqual({});
   });
 });

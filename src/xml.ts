@@ -20,9 +20,22 @@ export function parseXMLOwn(xml: string, options: XmlParseOptions = {}): Record<
   // Remove code blocks
   processedXml = processedXml.replace(/```xml/g, '').replace(/```/g, '');
 
+  // Strip reasoning/thinking blocks emitted by some models (e.g. DeepSeek R1, QwQ)
+  // before they produce the actual XML answer.
+  processedXml = processedXml.replace(/<think(?:ing)?[^>]*>[\s\S]*?<\/think(?:ing)?>/gi, '');
+  processedXml = processedXml.replace(/<reasoning[^>]*>[\s\S]*?<\/reasoning>/gi, '');
+
   // Merge with previous content if exists
   if (previousContent) {
     processedXml = previousContent + processedXml.trimEnd();
+  }
+
+  // Extract just the <lorebooks> region, ignoring any surrounding prose.
+  // Fall back to a singular <lorebook> root that some models emit.
+  const lorebooksRegion =
+    processedXml.match(/<lorebooks>[\s\S]*<\/lorebooks>/i) ?? processedXml.match(/<lorebook>[\s\S]*<\/lorebook>/i);
+  if (lorebooksRegion) {
+    processedXml = lorebooksRegion[0];
   }
 
   // Ensure XML is complete by checking for imbalanced tags
@@ -37,11 +50,12 @@ export function parseXMLOwn(xml: string, options: XmlParseOptions = {}): Record<
   try {
     const rawResponse = parser.parse(processedXml);
     // console.log('Raw response', rawResponse);
-    if (!rawResponse.lorebooks) {
+    const root = rawResponse.lorebooks ?? rawResponse.lorebook;
+    if (!root || !root.entry) {
       return entriesByWorldName;
     }
 
-    const entries = rawResponse.lorebooks.entry?.content ? [rawResponse.lorebooks.entry] : rawResponse.lorebooks.entry;
+    const entries: any[] = Array.isArray(root.entry) ? root.entry : [root.entry];
     for (const entry of entries) {
       const worldName = entry.worldName;
       if (!worldName) {
@@ -53,8 +67,8 @@ export function parseXMLOwn(xml: string, options: XmlParseOptions = {}): Record<
       entriesByWorldName[worldName].push({
         uid: entry.id ?? createRandomNumber(6),
         key: entry.triggers?.split(',').map((t: string) => t.trim()) ?? [],
-        content: entry.content,
-        comment: entry.name,
+        content: entry.content ?? '',
+        comment: entry.name ?? '',
         disable: false,
         keysecondary: [],
       });

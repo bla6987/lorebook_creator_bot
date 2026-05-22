@@ -189,6 +189,7 @@ export async function runWorldInfoRecommendation({
   });
 
   if (Object.keys(parsedEntries).length === 0) {
+    console.error('AI response received but no entries were parsed. Raw content:', String(response.content));
     return {};
   }
 
