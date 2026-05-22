@@ -196,6 +196,11 @@ dialog:has(.select-entries-popup) {
         }
     }
 
+    .openrouter-pricing-summary {
+        opacity: 0.72;
+        line-height: 1.3;
+    }
+
     .api-settings-actions {
         flex-wrap: wrap;
         justify-content: flex-start;

@@ -12,6 +12,12 @@ import {
   saveResponsePreset,
 } from '../api-settings.js';
 import type { ApiSettingsDraft } from '../api-settings.js';
+// @ts-ignore SillyTavern runtime module resolved from the built extension path.
+import { model_list as chatCompletionModels } from '../../../../openai.js';
+// @ts-ignore SillyTavern runtime module resolved from the built extension path.
+import { openRouterModels as textCompletionOpenRouterModels } from '../../../../textgen-models.js';
+// @ts-ignore SillyTavern runtime module resolved from the built extension path.
+import { amount_gen, max_context } from '../../../../../script.js';
 
 const context = SillyTavern.getContext();
 
@@ -41,6 +47,16 @@ interface ModelOption {
   value: string;
   label: string;
   group?: string;
+}
+
+interface OpenRouterModel {
+  id: string;
+  name?: string;
+  context_length?: number;
+  pricing?: {
+    prompt?: string | number;
+    completion?: string | number;
+  };
 }
 
 const CHAT_MODEL_SELECTORS: Record<string, string> = {
@@ -84,6 +100,88 @@ const TEXT_MODEL_SELECTORS: Record<string, string> = {
   tabby: '#tabby_model',
 };
 
+const getApiMap = (profile: ConnectionProfile): any =>
+  profile.api ? (context.CONNECT_API_MAP[profile.api] as any) : undefined;
+
+const isOpenRouterProfile = (profile: ConnectionProfile): boolean => {
+  const apiMap = getApiMap(profile);
+  return apiMap?.source === 'openrouter' || apiMap?.type === 'openrouter';
+};
+
+const getOpenRouterModelsForProfile = (profile: ConnectionProfile): OpenRouterModel[] => {
+  const apiMap = getApiMap(profile);
+  if (apiMap?.source === 'openrouter') return chatCompletionModels as OpenRouterModel[];
+  if (apiMap?.type === 'openrouter') return textCompletionOpenRouterModels as OpenRouterModel[];
+  return [];
+};
+
+const getOpenRouterModel = (profile: ConnectionProfile, modelId: string): OpenRouterModel | undefined =>
+  getOpenRouterModelsForProfile(profile).find((model) => model.id === modelId);
+
+const formatOpenRouterPrice = (model?: OpenRouterModel): string | undefined => {
+  const promptPrice = Number(model?.pricing?.prompt);
+  if (!Number.isFinite(promptPrice)) return undefined;
+  if (promptPrice === 0) return 'Free';
+
+  const tokensPerDollar = 1 / (1000 * promptPrice);
+  const roundedTokens = (Math.round(tokensPerDollar * 1000) / 1000).toFixed(0);
+  return `${roundedTokens}k t/$`;
+};
+
+const formatOpenRouterModelLabel = (model?: OpenRouterModel, fallbackLabel?: string): string | undefined => {
+  if (!model) return undefined;
+
+  const parts = [model.name || model.id];
+  if (model.context_length) {
+    parts.push(`${model.context_length} ctx`);
+  }
+
+  const price = formatOpenRouterPrice(model);
+  if (price) {
+    parts.push(price);
+  }
+
+  return parts.length > 1 ? parts.join(' | ') : fallbackLabel;
+};
+
+const firstFiniteNumber = (...values: unknown[]): number | undefined => {
+  for (const value of values) {
+    const numberValue = Number(value);
+    if (Number.isFinite(numberValue)) return numberValue;
+  }
+  return undefined;
+};
+
+const calculateOpenRouterMaxPromptCost = (profile: ConnectionProfile, preset: Record<string, any>): string => {
+  const model = getOpenRouterModel(profile, getModelValue(profile));
+  if (!model?.pricing) return 'Unknown';
+
+  const completionCost = Number(model.pricing.completion);
+  const promptCost = Number(model.pricing.prompt);
+  if (!Number.isFinite(completionCost) || !Number.isFinite(promptCost)) return 'Unknown';
+
+  const apiMap = getApiMap(profile);
+  const isChatCompletion = apiMap?.source === 'openrouter';
+  const completionTokens = isChatCompletion
+    ? firstFiniteNumber(preset.openai_max_tokens, context.chatCompletionSettings.openai_max_tokens)
+    : firstFiniteNumber(preset.genamt, amount_gen);
+  const contextTokens = isChatCompletion
+    ? firstFiniteNumber(preset.openai_max_context, context.chatCompletionSettings.openai_max_context)
+    : firstFiniteNumber(preset.max_length, max_context);
+
+  if (completionTokens === undefined || contextTokens === undefined) return 'Unknown';
+
+  const promptTokens = contextTokens - completionTokens;
+  const totalCost = completionCost * completionTokens + promptCost * promptTokens;
+  if (!Number.isFinite(totalCost)) return 'Unknown';
+
+  let cost = `$${totalCost.toFixed(3)}`;
+  if (isChatCompletion && (preset.enable_web_search ?? context.chatCompletionSettings.enable_web_search)) {
+    cost += ' + $0.02';
+  }
+  return cost;
+};
+
 const extractSelectOptions = (selector?: string): ModelOption[] => {
   if (!selector) return [];
   const select = document.querySelector(selector);
@@ -112,10 +210,21 @@ const getModelSelector = (profile: ConnectionProfile): string | undefined => {
 const getModelOptions = (profile: ConnectionProfile): ModelOption[] => {
   const options = extractSelectOptions(getModelSelector(profile));
   const currentModel = getModelValue(profile);
+  const openRouterProfile = isOpenRouterProfile(profile);
+  const enrichedOptions = openRouterProfile
+    ? options.map((option) => ({
+        ...option,
+        label: formatOpenRouterModelLabel(getOpenRouterModel(profile, option.value), option.label) ?? option.label,
+      }))
+    : options;
+
   if (currentModel && !options.some((option) => option.value === currentModel)) {
-    return [{ value: currentModel, label: `${currentModel} (current)` }, ...options];
+    const label =
+      (openRouterProfile && formatOpenRouterModelLabel(getOpenRouterModel(profile, currentModel))) ||
+      `${currentModel} (current)`;
+    return [{ value: currentModel, label }, ...enrichedOptions];
   }
-  return options;
+  return enrichedOptions;
 };
 
 const groupModelOptions = (options: ModelOption[]) => {
@@ -276,6 +385,9 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
 
   const isTextCompletion = draft.selectedApiGroup === 'textgenerationwebui';
   const isChatCompletion = draft.selectedApiGroup === 'openai';
+  const openRouterPromptCost = isOpenRouterProfile(draft.profile)
+    ? calculateOpenRouterMaxPromptCost(draft.profile, draft.preset)
+    : undefined;
 
   return (
     <div className="api-settings-panel">
@@ -368,6 +480,9 @@ export const ApiSettingsPanel: FC<ApiSettingsPanelProps> = ({ profileId, onProfi
               onClick={() => setModelOptionsVersion((version) => version + 1)}
             />
           </div>
+          {openRouterPromptCost && (
+            <small className="openrouter-pricing-summary">Max prompt cost: {openRouterPromptCost}</small>
+          )}
         </label>
         <label>
           API URL
