@@ -958,6 +958,7 @@ dialog:has(.select-entries-popup) {
     }
 
     .wirc-header-actions .global-revise,
+    .wirc-mobile-suggestion-actions .global-revise,
     .generate {
         border-color: rgba(143, 101, 211, 0.58);
         background: linear-gradient(180deg, rgba(105, 67, 161, 0.98), rgba(76, 45, 124, 0.98));
@@ -970,6 +971,11 @@ dialog:has(.select-entries-popup) {
         .menu_button {
             min-width: 150px;
         }
+    }
+
+    .wirc-mobile-task-tabs,
+    .wirc-mobile-suggestion-actions {
+        display: none;
     }
 
     .wirc-recommender-grid {
@@ -1548,12 +1554,48 @@ dialog:has(.select-entries-popup) {
     }
 
     @media (max-width: 900px) {
-        width: min(100%, 96dvw);
+        width: min(100%, 100dvw);
         min-height: 0;
+        padding: 8px;
+        border-radius: 8px;
+
+        h2 {
+            font-size: 1.18rem;
+            line-height: 1.15;
+        }
+
+        .text_pole,
+        input:not([type='checkbox']):not([type='color']),
+        select,
+        textarea,
+        .menu_button {
+            min-height: 40px;
+        }
 
         .wirc-app-header {
             align-items: flex-start;
             flex-direction: column;
+            gap: 10px;
+            padding: 10px;
+        }
+
+        .wirc-title-lockup {
+            min-width: 0;
+            width: 100%;
+            gap: 8px;
+
+            p {
+                font-size: 0.82rem;
+            }
+        }
+
+        .wirc-logo {
+            width: 38px;
+            height: 38px;
+
+            i {
+                font-size: 1.2rem;
+            }
         }
 
         .wirc-header-meta,
@@ -1562,12 +1604,73 @@ dialog:has(.select-entries-popup) {
             justify-content: stretch;
         }
 
-        .wirc-header-actions .menu_button {
-            flex: 1 1 150px;
+        .wirc-header-actions {
+            display: none;
         }
 
         .wirc-token-meter {
             width: 100%;
+            min-width: 0;
+
+            > span {
+                margin-bottom: 5px;
+                text-align: left;
+            }
+        }
+
+        .wirc-mode-switch {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+
+            .menu_button {
+                min-width: 0;
+                width: 100%;
+            }
+        }
+
+        .wirc-mobile-task-tabs {
+            position: sticky;
+            top: 0;
+            z-index: 8;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 4px;
+            margin: 0 0 10px;
+            padding: 6px;
+            border: 1px solid rgba(137, 155, 174, 0.18);
+            border-radius: 8px;
+            background: rgba(8, 12, 16, 0.96);
+            backdrop-filter: blur(10px);
+
+            .menu_button {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 0;
+                min-height: 48px;
+                padding: 5px 3px;
+                flex-direction: column;
+                gap: 3px;
+                font-size: 0.72rem;
+                line-height: 1.1;
+                white-space: normal;
+
+                i {
+                    margin-right: 0;
+                    font-size: 0.95rem;
+                }
+
+                span {
+                    min-width: 18px;
+                    padding: 1px 5px;
+                    border-radius: 999px;
+                    color: var(--wirc-text);
+                    background: rgba(69, 200, 102, 0.22);
+                    font-size: 0.68rem;
+                    font-weight: 800;
+                }
+            }
         }
 
         .wirc-recommender-grid,
@@ -1576,18 +1679,254 @@ dialog:has(.select-entries-popup) {
             grid-template-columns: minmax(0, 1fr);
         }
 
+        .wirc-recommender-grid {
+            gap: 0;
+        }
+
+        .wirc-mobile-panel {
+            display: none;
+        }
+
+        .wirc-rail.mobile-active {
+            display: block;
+        }
+
+        .wirc-panel.mobile-active {
+            display: flex;
+        }
+
         .wirc-rail,
-        .wirc-right-rail {
+        .wirc-right-rail,
+        .wirc-results-panel {
             max-height: none;
+            overflow: visible;
+        }
+
+        .wirc-section,
+        .wirc-right-rail,
+        .wirc-editor-frame {
+            padding: 12px;
+        }
+
+        .wirc-section-title {
+            margin-bottom: 10px;
         }
 
         .wirc-panel-heading {
             align-items: flex-start;
             flex-direction: column;
+            gap: 10px;
+            padding: 12px;
+        }
+
+        .panel-tab-bar {
+            display: grid;
+            width: 100%;
+            grid-template-columns: 1fr 1fr;
+
+            .menu_button {
+                width: 100%;
+                min-width: 0;
+            }
+        }
+
+        .wirc-mobile-suggestion-actions {
+            position: sticky;
+            top: 64px;
+            z-index: 6;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(137, 155, 174, 0.16);
+            background: rgba(10, 15, 20, 0.96);
+            backdrop-filter: blur(10px);
+        }
+
+        .suggestion-tools {
+            gap: 8px;
+            padding: 12px;
         }
 
         .wirc-list-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             justify-content: stretch;
+            white-space: normal;
+
+            .menu_button {
+                width: 100%;
+            }
+        }
+
+        .suggestion-list {
+            gap: 10px;
+            padding: 10px 12px 12px;
+        }
+
+        .wirc-panel-footer {
+            flex-direction: column;
+            padding: 10px 12px;
+        }
+
+        .wirc-rail.mobile-active .generate {
+            position: sticky;
+            bottom: 8px;
+            z-index: 5;
+            min-height: 48px;
+            box-shadow:
+                0 -8px 24px rgba(0, 0, 0, 0.28),
+                inset 0 1px 0 rgba(255, 255, 255, 0.07);
+        }
+
+        .entry {
+            padding: 12px;
+        }
+
+        .entry-heading {
+            grid-template-columns: 30px minmax(0, 1fr) 20px;
+            gap: 8px;
+        }
+
+        .entry-index {
+            width: 28px;
+            height: 28px;
+            font-size: 0.84rem;
+        }
+
+        .entry .comment {
+            font-size: 0.96rem;
+        }
+
+        .entry-state {
+            flex: 0 0 auto;
+        }
+
+        .entry .content {
+            font-size: 0.92rem;
+        }
+
+        .entry .menu {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            width: 100%;
+
+            .menu_button {
+                width: 100%;
+                min-width: 0;
+                min-height: 40px;
+                justify-content: center;
+                padding: 6px 7px;
+                overflow: hidden;
+                font-size: 0.78rem;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .add {
+                order: 1;
+            }
+
+            .chat-revise {
+                order: 2;
+            }
+
+            .continue {
+                order: 3;
+            }
+
+            .revise {
+                order: 4;
+            }
+
+            .edit {
+                order: 5;
+            }
+
+            .compare {
+                order: 6;
+            }
+
+            .blacklist {
+                order: 7;
+            }
+
+            .remove {
+                order: 8;
+            }
+        }
+
+        .continue-prompt-section {
+            summary {
+                min-height: 34px;
+                display: flex;
+                align-items: center;
+            }
+        }
+
+        .wirc-right-tabs {
+            position: sticky;
+            top: 64px;
+            z-index: 6;
+            background: rgba(10, 15, 20, 0.96);
+            backdrop-filter: blur(10px);
+        }
+
+        .world-info-recommender-settings textarea {
+            min-height: 180px;
+        }
+
+        .activity-stat-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .lorebook-editor-grid {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .lorebook-entry-card .entry-card-actions,
+        .toolbar-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+
+            .menu_button {
+                width: 100%;
+                min-width: 0;
+            }
+        }
+    }
+
+    @media (max-width: 430px) {
+        padding: 6px;
+
+        .wirc-app-header {
+            padding: 9px;
+        }
+
+        .wirc-title-lockup p {
+            display: none;
+        }
+
+        .wirc-mobile-task-tabs {
+            gap: 3px;
+            padding: 5px;
+
+            .menu_button {
+                min-height: 46px;
+                font-size: 0.66rem;
+            }
+        }
+
+        .entry .menu {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .wirc-mobile-suggestion-actions,
+        .wirc-list-actions,
+        .lorebook-entry-card .entry-card-actions,
+        .toolbar-actions {
+            grid-template-columns: minmax(0, 1fr);
         }
     }
 }

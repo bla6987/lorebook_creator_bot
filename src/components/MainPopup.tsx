@@ -68,6 +68,7 @@ const globalContext = SillyTavern.getContext();
 const getAvatar = () => (this_chid ? st_getCharaFilename(this_chid) : selected_group);
 const optionalEntryFields = ['constant', 'vectorized', 'order', 'position', 'depth', 'role'] as const;
 type OptionalEntryField = (typeof optionalEntryFields)[number];
+type MobilePanel = 'setup' | 'suggestions' | 'settings' | 'activity';
 
 const hasOwnEntryField = (entry: ExtendedWIEntry, field: OptionalEntryField) =>
   Object.prototype.hasOwnProperty.call(entry, field);
@@ -120,6 +121,7 @@ export const MainPopup: FC = () => {
   const [activeTab, setActiveTab] = useState<'recommender' | 'editor'>('recommender');
   const [suggestionTab, setSuggestionTab] = useState<'suggestions' | 'preview'>('suggestions');
   const [rightRailTab, setRightRailTab] = useState<'settings' | 'activity'>('settings');
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>('setup');
   const [suggestionSearch, setSuggestionSearch] = useState('');
   const [suggestionTargetFilter, setSuggestionTargetFilter] = useState('all');
   const [suggestionSort, setSuggestionSort] = useState<'newest' | 'title' | 'target'>('newest');
@@ -132,6 +134,7 @@ export const MainPopup: FC = () => {
 
   const selectEntriesPopupRef = useRef<SelectEntriesPopupRef>(null);
   const importPopupRef = useRef<SelectEntriesPopupRef>(null);
+  const previousSuggestionCountRef = useRef(0);
 
   const avatarKey = useMemo(() => getAvatar() ?? '_global', [this_chid, selected_group]);
 
@@ -839,13 +842,34 @@ export const MainPopup: FC = () => {
     [session.selectedEntryUids],
   );
 
+  const suggestedEntriesList = useMemo(
+    () =>
+      Object.entries(session.suggestedEntries).flatMap(([worldName, entries]) =>
+        entries.map((entry) => ({ worldName, entry })),
+      ),
+    [session.suggestedEntries],
+  );
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const previousCount = previousSuggestionCountRef.current;
+    const currentCount = suggestedEntriesList.length;
+
+    if (currentCount === 0 && previousCount > 0) {
+      setMobilePanel('setup');
+    } else if (currentCount > previousCount) {
+      setMobilePanel('suggestions');
+      setSuggestionTab('suggestions');
+    }
+
+    previousSuggestionCountRef.current = currentCount;
+  }, [isLoading, suggestedEntriesList.length]);
+
   if (isLoading) {
     return <div>Loading...</div>;
   }
 
-  const suggestedEntriesList = Object.entries(session.suggestedEntries).flatMap(([worldName, entries]) =>
-    entries.map((entry) => ({ worldName, entry })),
-  );
   const visibleSuggestedEntriesList = suggestedEntriesList
     .filter(({ worldName, entry }) => {
       if (suggestionTargetFilter !== 'all' && worldName !== suggestionTargetFilter) return false;
@@ -880,6 +904,8 @@ export const MainPopup: FC = () => {
   );
   const tokenPercent =
     responseTokenLimit > 0 ? Math.min(100, Math.round((tokenUsageEstimate / responseTokenLimit) * 100)) : 0;
+  const effectiveRightRailTab =
+    mobilePanel === 'activity' ? 'activity' : mobilePanel === 'settings' ? 'settings' : rightRailTab;
 
   return (
     <>
@@ -938,9 +964,51 @@ export const MainPopup: FC = () => {
             <i className="fa-solid fa-book-open"></i> Lorebook Editor
           </STButton>
         </div>
+        {activeTab === 'recommender' && (
+          <div className="wirc-mobile-task-tabs" role="tablist" aria-label="Mobile work area">
+            <STButton
+              className={`menu_button ${mobilePanel === 'setup' ? 'active' : ''}`}
+              onClick={() => setMobilePanel('setup')}
+            >
+              <i className="fa-solid fa-sliders"></i>
+              Setup
+            </STButton>
+            <STButton
+              className={`menu_button ${mobilePanel === 'suggestions' ? 'active' : ''}`}
+              onClick={() => {
+                setMobilePanel('suggestions');
+                setSuggestionTab('suggestions');
+              }}
+            >
+              <i className="fa-solid fa-list-check"></i>
+              Results
+              {suggestedEntriesList.length > 0 && <span>{suggestedEntriesList.length}</span>}
+            </STButton>
+            <STButton
+              className={`menu_button ${mobilePanel === 'settings' ? 'active' : ''}`}
+              onClick={() => {
+                setMobilePanel('settings');
+                setRightRailTab('settings');
+              }}
+            >
+              <i className="fa-solid fa-gear"></i>
+              Settings
+            </STButton>
+            <STButton
+              className={`menu_button ${mobilePanel === 'activity' ? 'active' : ''}`}
+              onClick={() => {
+                setMobilePanel('activity');
+                setRightRailTab('activity');
+              }}
+            >
+              <i className="fa-solid fa-chart-simple"></i>
+              Activity
+            </STButton>
+          </div>
+        )}
         {activeTab === 'recommender' ? (
           <div className="wirc-recommender-grid">
-            <aside className="wirc-rail">
+            <aside className={`wirc-rail wirc-mobile-panel ${mobilePanel === 'setup' ? 'mobile-active' : ''}`}>
               <section className="wirc-section">
                 <div className="wirc-section-title">
                   <span>1</span>
@@ -1253,7 +1321,11 @@ export const MainPopup: FC = () => {
               </section>
             </aside>
 
-            <main className="wirc-panel wirc-results-panel">
+            <main
+              className={`wirc-panel wirc-results-panel wirc-mobile-panel ${
+                mobilePanel === 'suggestions' ? 'mobile-active' : ''
+              }`}
+            >
               <div className="wirc-panel-heading">
                 <div>
                   <h3>
@@ -1278,6 +1350,24 @@ export const MainPopup: FC = () => {
               </div>
               {suggestionTab === 'suggestions' ? (
                 <>
+                  <div className="wirc-mobile-suggestion-actions">
+                    <STButton
+                      onClick={() => setIsImporting(true)}
+                      disabled={isGenerating}
+                      className="menu_button interactable"
+                      title="Import existing entries to continue or revise them"
+                    >
+                      <i className="fa-solid fa-download"></i> Import
+                    </STButton>
+                    <STButton
+                      onClick={() => setIsGlobalReviseOpen(true)}
+                      disabled={isGenerating}
+                      className="menu_button interactable global-revise"
+                      title="Revise all selected existing entries and current suggestions in a single chat session"
+                    >
+                      <i className="fa-solid fa-wand-magic-sparkles"></i> Global Revise
+                    </STButton>
+                  </div>
                   <div className="suggestion-tools">
                     <label className="search-field">
                       <i className="fa-solid fa-magnifying-glass"></i>
@@ -1373,22 +1463,32 @@ export const MainPopup: FC = () => {
               )}
             </main>
 
-            <aside className="wirc-panel wirc-right-rail">
+            <aside
+              className={`wirc-panel wirc-right-rail wirc-mobile-panel ${
+                mobilePanel === 'settings' || mobilePanel === 'activity' ? 'mobile-active' : ''
+              }`}
+            >
               <div className="wirc-right-tabs">
                 <STButton
-                  className={`menu_button ${rightRailTab === 'settings' ? 'active' : ''}`}
-                  onClick={() => setRightRailTab('settings')}
+                  className={`menu_button ${effectiveRightRailTab === 'settings' ? 'active' : ''}`}
+                  onClick={() => {
+                    setRightRailTab('settings');
+                    setMobilePanel('settings');
+                  }}
                 >
                   Settings & Templates
                 </STButton>
                 <STButton
-                  className={`menu_button ${rightRailTab === 'activity' ? 'active' : ''}`}
-                  onClick={() => setRightRailTab('activity')}
+                  className={`menu_button ${effectiveRightRailTab === 'activity' ? 'active' : ''}`}
+                  onClick={() => {
+                    setRightRailTab('activity');
+                    setMobilePanel('activity');
+                  }}
                 >
                   Activity
                 </STButton>
               </div>
-              {rightRailTab === 'settings' ? (
+              {effectiveRightRailTab === 'settings' ? (
                 <WorldInfoRecommenderSettings />
               ) : (
                 <div className="wirc-activity-panel">
