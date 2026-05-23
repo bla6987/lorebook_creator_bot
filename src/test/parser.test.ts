@@ -237,6 +237,63 @@ The user wants a city entry.</think>\n${baseXml}`;
     expect(result.Earth).toHaveLength(1);
   });
 
+  test('preserves optional activation and position fields', () => {
+    const input = `
+<lorebooks>
+  <entry>
+    <worldName>Earth</worldName>
+    <id>42</id>
+    <name>Depth Entry</name>
+    <triggers>depth,entry</triggers>
+    <constant>true</constant>
+    <vectorized>false</vectorized>
+    <order>7</order>
+    <position>4</position>
+    <depth>3</depth>
+    <role>2</role>
+    <content>At-depth content.</content>
+  </entry>
+</lorebooks>`;
+
+    const result = parseXMLOwn(input);
+    expect(result.Earth[0]).toMatchObject({
+      uid: 42,
+      constant: true,
+      vectorized: false,
+      order: 7,
+      position: 4,
+      depth: 3,
+      role: 2,
+    });
+  });
+
+  test('normalizes legacy role aliases while parsing XML', () => {
+    const input = `
+<lorebooks>
+  <entry>
+    <worldName>Earth</worldName>
+    <name>Alias Entry</name>
+    <triggers>alias</triggers>
+    <position>4</position>
+    <roleAtDepth>1</roleAtDepth>
+    <content>Alias content.</content>
+  </entry>
+  <entry>
+    <worldName>Earth</worldName>
+    <name>Alias Entry Two</name>
+    <triggers>alias-two</triggers>
+    <position>4</position>
+    <depth_role>2</depth_role>
+    <content>Alias content two.</content>
+  </entry>
+</lorebooks>`;
+
+    const result = parseXMLOwn(input);
+    expect(result.Earth.map((entry) => entry.role)).toEqual([1, 2]);
+    expect(result.Earth[0]).not.toHaveProperty('roleAtDepth');
+    expect(result.Earth[1]).not.toHaveProperty('depth_role');
+  });
+
   test('does not crash when a single entry lacks a <content> tag', () => {
     const input = `
 <lorebooks>

@@ -1,7 +1,6 @@
 import { FC, useState, useMemo, useRef } from 'react';
 import showdown from 'showdown';
 import { STButton, Popup, STTextarea } from 'sillytavern-utils-lib/components/react';
-import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { RegexScriptData } from 'sillytavern-utils-lib/types/regex';
 import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { CompareEntryPopup } from './CompareEntryPopup.js';
@@ -10,30 +9,32 @@ import { ReviseSessionManager } from './ReviseSessionManager.js';
 import { Session } from '../generate.js';
 import { ExtensionSettings } from '../settings.js';
 import { ReviseState } from '../revise-types.js';
+import { ExtendedWIEntry } from '../types.js';
+import { getActivationMode, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
 
 const converter = new showdown.Converter();
 
 export interface SuggestedEntryProps {
   initialWorldName: string;
-  entry: WIEntry;
+  entry: ExtendedWIEntry;
   allWorldNames: string[];
-  existingEntry?: WIEntry;
+  existingEntry?: ExtendedWIEntry;
   sessionRegexIds: Record<string, Partial<RegexScriptData>>;
-  entriesGroupByWorldName: Record<string, WIEntry[]>;
+  entriesGroupByWorldName: Record<string, ExtendedWIEntry[]>;
   sessionForContext: Session;
   contextToSend: ExtensionSettings['contextToSend'];
-  onAdd: (entry: WIEntry, initialWorldName: string, selectedTargetWorld: string) => void;
-  onRemove: (entry: WIEntry, initialWorldName: string, isBlacklist: boolean) => void;
+  onAdd: (entry: ExtendedWIEntry, initialWorldName: string, selectedTargetWorld: string) => void;
+  onRemove: (entry: ExtendedWIEntry, initialWorldName: string, isBlacklist: boolean) => void;
   onContinue: (continueFrom: {
     worldName: string;
-    entry: WIEntry;
+    entry: ExtendedWIEntry;
     prompt: string;
     mode: 'continue' | 'revise';
   }) => void;
   onUpdate: (
     worldName: string,
-    originalEntry: WIEntry,
-    updatedEntry: WIEntry,
+    originalEntry: ExtendedWIEntry,
+    updatedEntry: ExtendedWIEntry,
     updatedRegexIds: Record<string, Partial<RegexScriptData>>,
   ) => void;
 }
@@ -72,6 +73,16 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
   );
 
   const isActing = isContinuing || isRevising;
+  const metadataChips = useMemo(() => {
+    const chips = [`Activation: ${getActivationMode(entry)}`];
+    if (entry.position !== undefined && entry.position !== null) chips.push(`Position: ${getPositionLabel(entry.position)}`);
+    if (entry.order !== undefined) chips.push(`Order: ${entry.order}`);
+    if (entry.position === 4) {
+      chips.push(`Depth: ${entry.depth ?? 4}`);
+      chips.push(`Role: ${getRoleLabel(entry.role)}`);
+    }
+    return chips;
+  }, [entry]);
 
   const handleAddClick = async () => {
     setIsAdding(true);
@@ -91,8 +102,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
   };
 
   const handleApplyReviseSession = (newState: ReviseState) => {
-    // In an 'entry' session, newState is a WIEntry.
-    onUpdate(initialWorldName, entry, newState as WIEntry, sessionRegexIds);
+    onUpdate(initialWorldName, entry, newState as ExtendedWIEntry, sessionRegexIds);
   };
 
   return (
@@ -166,6 +176,11 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
         </div>
         <h4 className="comment">{entry.comment}</h4>
         <div className="key">{entry.key.join(', ')}</div>
+        <div className="entry-meta-chips">
+          {metadataChips.map((chip) => (
+            <span key={chip}>{chip}</span>
+          ))}
+        </div>
         <p className="content" dangerouslySetInnerHTML={{ __html: converter.makeHtml(entry.content ?? '') }}></p>
         <div className="continue-prompt-section" style={{ marginTop: '10px' }}>
           <STTextarea

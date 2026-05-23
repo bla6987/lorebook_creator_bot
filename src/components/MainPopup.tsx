@@ -9,7 +9,7 @@ import {
   DropdownItem as FancyDropdownItem,
   Popup,
 } from 'sillytavern-utils-lib/components/react';
-import { BuildPromptOptions, getWorldInfos } from 'sillytavern-utils-lib';
+import { BuildPromptOptions, Message, getWorldInfos } from 'sillytavern-utils-lib';
 import {
   groups,
   selected_group,
@@ -19,8 +19,7 @@ import {
   this_chid,
   world_names,
 } from 'sillytavern-utils-lib/config';
-import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
-import { runWorldInfoRecommendation, Session } from '../generate.js';
+import { buildRecommendationMessages, runWorldInfoRecommendation, Session } from '../generate.js';
 import { ExtensionSettings, settingsManager } from '../settings.js';
 import { Character } from 'sillytavern-utils-lib/types';
 import { RegexScriptData } from 'sillytavern-utils-lib/types/regex';
@@ -31,6 +30,10 @@ import { SelectEntriesPopup, SelectEntriesPopupRef } from './SelectEntriesPopup.
 import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { ReviseSessionManager } from './ReviseSessionManager.js';
 import { ApiSettingsPanel } from './ApiSettingsPanel.js';
+import { getRuntimeConnectionProfile } from '../api-settings.js';
+import { ExtendedWIEntry, SaveEntryPayload } from '../types.js';
+import { LorebookEditor } from './LorebookEditor.js';
+import { normalizeEntriesByWorld, normalizeExtendedEntry } from './lorebookEditorUtils.js';
 
 if (!Handlebars.helpers['join']) {
   Handlebars.registerHelper('join', function (array: any, separator: any) {
@@ -62,6 +65,41 @@ if (!Handlebars.helpers['is_not_empty']) {
 const globalContext = SillyTavern.getContext();
 
 const getAvatar = () => (this_chid ? st_getCharaFilename(this_chid) : selected_group);
+const optionalEntryFields = ['constant', 'vectorized', 'order', 'position', 'depth', 'role'] as const;
+type OptionalEntryField = (typeof optionalEntryFields)[number];
+
+const hasOwnEntryField = (entry: ExtendedWIEntry, field: OptionalEntryField) =>
+  Object.prototype.hasOwnProperty.call(entry, field);
+
+const buildEntryUpdatePayload = (entry: ExtendedWIEntry): Partial<ExtendedWIEntry> => {
+  const normalizedEntry = normalizeExtendedEntry(entry);
+  const payload: Partial<ExtendedWIEntry> = {
+    key: normalizedEntry.key,
+    content: normalizedEntry.content,
+    comment: normalizedEntry.comment,
+  };
+
+  optionalEntryFields.forEach((field) => {
+    if (hasOwnEntryField(normalizedEntry, field)) {
+      (payload as Record<OptionalEntryField, ExtendedWIEntry[OptionalEntryField]>)[field] = normalizedEntry[field];
+    }
+  });
+
+  return payload;
+};
+
+const hasEntryChanges = (entry: ExtendedWIEntry, existingEntry: ExtendedWIEntry) => {
+  const normalizedEntry = normalizeExtendedEntry(entry);
+  const contentChanged = (normalizedEntry.content || '') !== (existingEntry.content || '');
+  const commentChanged = (normalizedEntry.comment || '') !== (existingEntry.comment || '');
+  const keysChanged =
+    (normalizedEntry.key || []).slice().sort().join(',') !== (existingEntry.key || []).slice().sort().join(',');
+  const optionalChanged = optionalEntryFields.some(
+    (field) => hasOwnEntryField(normalizedEntry, field) && normalizedEntry[field] !== existingEntry[field],
+  );
+
+  return contentChanged || commentChanged || keysChanged || optionalChanged;
+};
 
 export const MainPopup: FC = () => {
   const forceUpdate = useForceUpdate();
@@ -74,10 +112,15 @@ export const MainPopup: FC = () => {
     regexIds: {},
   });
   const [allWorldNames, setAllWorldNames] = useState<string[]>([]);
-  const [entriesGroupByWorldName, setEntriesGroupByWorldName] = useState<Record<string, WIEntry[]>>({});
+  const [entriesGroupByWorldName, setEntriesGroupByWorldName] = useState<Record<string, ExtendedWIEntry[]>>({});
   const [groupMembers, setGroupMembers] = useState<Character[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [activeTab, setActiveTab] = useState<'recommender' | 'editor'>('recommender');
+  const [suggestionTab, setSuggestionTab] = useState<'suggestions' | 'preview'>('suggestions');
+  const [previewMessages, setPreviewMessages] = useState<Message[]>([]);
+  const [previewError, setPreviewError] = useState('');
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isSelectingEntries, setIsSelectingEntries] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isGlobalReviseOpen, setIsGlobalReviseOpen] = useState(false);
@@ -87,92 +130,94 @@ export const MainPopup: FC = () => {
 
   const avatarKey = useMemo(() => getAvatar() ?? '_global', [this_chid, selected_group]);
 
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      setEntriesGroupByWorldName({});
-      setAllWorldNames([]);
-      setGroupMembers([]);
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setEntriesGroupByWorldName({});
+    setAllWorldNames([]);
+    setGroupMembers([]);
 
-      const avatar = getAvatar();
-      const key = `worldInfoRecommend_${avatarKey}`;
+    const avatar = getAvatar();
+    const key = `worldInfoRecommend_${avatarKey}`;
 
-      const savedSession: Partial<Session> = JSON.parse(localStorage.getItem(key) ?? '{}');
-      const initialSession: Session = {
-        suggestedEntries: savedSession.suggestedEntries ?? {},
-        blackListedEntries: savedSession.blackListedEntries ?? [],
-        selectedWorldNames: savedSession.selectedWorldNames ?? [],
-        selectedEntryUids: savedSession.selectedEntryUids ?? {},
-        regexIds: savedSession.regexIds ?? {},
-      };
-
-      let loadedEntries: Record<string, WIEntry[]> = {};
-      if (avatar) {
-        if (selected_group) {
-          const groupWorldInfo = await getWorldInfos(['chat', 'persona', 'global'], true);
-          if (groupWorldInfo) loadedEntries = groupWorldInfo;
-
-          const group = groups.find((g: any) => g.id === selected_group);
-          if (group) {
-            for (const member of group.members) {
-              const index = globalContext.characters.findIndex((c: Character) => c.avatar === member);
-              if (index !== -1) {
-                const worldInfo = await getWorldInfos(['character'], true, index);
-                if (worldInfo) loadedEntries = { ...loadedEntries, ...worldInfo };
-              }
-            }
-          }
-        } else {
-          loadedEntries = await getWorldInfos(['all'], true, this_chid);
-        }
-      } else {
-        for (const worldName of world_names) {
-          const worldInfo = await globalContext.loadWorldInfo(worldName);
-          if (worldInfo) loadedEntries[worldName] = Object.values(worldInfo.entries);
-        }
-      }
-      setEntriesGroupByWorldName(loadedEntries);
-      const loadedWorldNames = Object.keys(loadedEntries);
-      setAllWorldNames(loadedWorldNames);
-
-      if (initialSession.selectedWorldNames.length === 0 && avatarKey !== '_global') {
-        initialSession.selectedWorldNames = [...loadedWorldNames];
-      } else {
-        initialSession.selectedWorldNames = initialSession.selectedWorldNames.filter((name) =>
-          loadedWorldNames.includes(name),
-        );
-      }
-
-      const validEntryUids: Record<string, number[]> = {};
-      if (initialSession.selectedEntryUids) {
-        for (const [worldName, uids] of Object.entries(initialSession.selectedEntryUids)) {
-          if (loadedEntries[worldName]) {
-            const worldEntryUids = new Set(loadedEntries[worldName].map((e) => e.uid));
-            const validUids = uids.filter((uid) => worldEntryUids.has(uid));
-            if (validUids.length > 0) {
-              validEntryUids[worldName] = validUids;
-            }
-          }
-        }
-      }
-      initialSession.selectedEntryUids = validEntryUids;
-      setSession(initialSession);
-
-      if (selected_group) {
-        const group = groups.find((g: any) => g.id === selected_group);
-        if (group?.generation_mode === 0) {
-          const members = group.members
-            .map((memberAvatar: string) => globalContext.characters.find((c: Character) => c.avatar === memberAvatar))
-            .filter((c?: Character): c is Character => !!c);
-          setGroupMembers(members);
-        }
-      }
-
-      setIsLoading(false);
+    const savedSession: Partial<Session> = JSON.parse(localStorage.getItem(key) ?? '{}');
+    const initialSession: Session = {
+      suggestedEntries: normalizeEntriesByWorld(savedSession.suggestedEntries ?? {}),
+      blackListedEntries: savedSession.blackListedEntries ?? [],
+      selectedWorldNames: savedSession.selectedWorldNames ?? [],
+      selectedEntryUids: savedSession.selectedEntryUids ?? {},
+      regexIds: savedSession.regexIds ?? {},
     };
 
-    loadData();
+    let loadedEntries: Record<string, ExtendedWIEntry[]> = {};
+    if (avatar) {
+      if (selected_group) {
+        const groupWorldInfo = await getWorldInfos(['chat', 'persona', 'global'], true);
+        if (groupWorldInfo) loadedEntries = groupWorldInfo;
+
+        const group = groups.find((g: any) => g.id === selected_group);
+        if (group) {
+          for (const member of group.members) {
+            const index = globalContext.characters.findIndex((c: Character) => c.avatar === member);
+            if (index !== -1) {
+              const worldInfo = await getWorldInfos(['character'], true, index);
+              if (worldInfo) loadedEntries = { ...loadedEntries, ...worldInfo };
+            }
+          }
+        }
+      } else {
+        loadedEntries = await getWorldInfos(['all'], true, this_chid);
+      }
+    } else {
+      for (const worldName of world_names) {
+        const worldInfo = await globalContext.loadWorldInfo(worldName);
+        if (worldInfo) loadedEntries[worldName] = Object.values(worldInfo.entries);
+      }
+    }
+
+    loadedEntries = normalizeEntriesByWorld(loadedEntries);
+    setEntriesGroupByWorldName(loadedEntries);
+    const loadedWorldNames = Object.keys(loadedEntries);
+    setAllWorldNames(loadedWorldNames);
+
+    if (initialSession.selectedWorldNames.length === 0 && avatarKey !== '_global') {
+      initialSession.selectedWorldNames = [...loadedWorldNames];
+    } else {
+      initialSession.selectedWorldNames = initialSession.selectedWorldNames.filter((name) =>
+        loadedWorldNames.includes(name),
+      );
+    }
+
+    const validEntryUids: Record<string, number[]> = {};
+    if (initialSession.selectedEntryUids) {
+      for (const [worldName, uids] of Object.entries(initialSession.selectedEntryUids)) {
+        if (loadedEntries[worldName]) {
+          const worldEntryUids = new Set(loadedEntries[worldName].map((e) => e.uid));
+          const validUids = uids.filter((uid) => worldEntryUids.has(uid));
+          if (validUids.length > 0) {
+            validEntryUids[worldName] = validUids;
+          }
+        }
+      }
+    }
+    initialSession.selectedEntryUids = validEntryUids;
+    setSession(initialSession);
+
+    if (selected_group) {
+      const group = groups.find((g: any) => g.id === selected_group);
+      if (group?.generation_mode === 0) {
+        const members = group.members
+          .map((memberAvatar: string) => globalContext.characters.find((c: Character) => c.avatar === memberAvatar))
+          .filter((c?: Character): c is Character => !!c);
+        setGroupMembers(members);
+      }
+    }
+
+    setIsLoading(false);
   }, [avatarKey]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -195,9 +240,82 @@ export const MainPopup: FC = () => {
     forceUpdate();
   };
 
+  const buildRecommendationRequestContext = useCallback(() => {
+    if (!settings.profileId) {
+      throw new Error('Please select a connection profile.');
+    }
+
+    const profile = getRuntimeConnectionProfile(settings.profileId);
+    if (!profile) {
+      throw new Error('Connection profile not found.');
+    }
+
+    const avatar = getAvatar();
+    const buildPromptOptions: BuildPromptOptions = {
+      presetName: profile.preset,
+      contextName: profile.context,
+      instructName: profile.instruct,
+      syspromptName: profile.sysprompt,
+      ignoreCharacterFields: !settings.contextToSend.charCard,
+      ignoreWorldInfo: true,
+      ignoreAuthorNote: !settings.contextToSend.authorNote,
+      maxContext:
+        settings.maxContextType === 'custom'
+          ? settings.maxContextValue
+          : settings.maxContextType === 'profile'
+            ? 'preset'
+            : 'active',
+      includeNames: !!selected_group,
+    };
+
+    if (!avatar) {
+      buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
+    } else {
+      switch (settings.contextToSend.messages.type) {
+        case 'none':
+          buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
+          break;
+        case 'first':
+          buildPromptOptions.messageIndexesBetween = { start: 0, end: settings.contextToSend.messages.first ?? 10 };
+          break;
+        case 'last': {
+          const lastCount = settings.contextToSend.messages.last ?? 10;
+          const chatLength = globalContext.chat?.length ?? 0;
+          buildPromptOptions.messageIndexesBetween = {
+            end: Math.max(0, chatLength - 1),
+            start: Math.max(0, chatLength - lastCount),
+          };
+          break;
+        }
+        case 'range':
+          if (settings.contextToSend.messages.range) {
+            buildPromptOptions.messageIndexesBetween = settings.contextToSend.messages.range;
+          }
+          break;
+      }
+    }
+
+    const promptSettings = structuredClone(settings.prompts);
+    if (!settings.contextToSend.stDescription) delete (promptSettings as any).stDescription;
+    if (!settings.contextToSend.worldInfo || session.selectedWorldNames.length === 0)
+      delete (promptSettings as any).currentLorebooks;
+    const anySuggestedEntries = Object.values(session.suggestedEntries).some((entries) => entries.length > 0);
+    if (!settings.contextToSend.suggestedEntries || !anySuggestedEntries)
+      delete (promptSettings as any).suggestedLorebooks;
+    if (session.blackListedEntries.length === 0) delete (promptSettings as any).blackListedEntries;
+
+    return {
+      buildPromptOptions,
+      promptSettings,
+      mainContextList: settings.mainContextTemplatePresets[settings.mainContextTemplatePreset].prompts
+        .filter((prompt) => prompt.enabled)
+        .map((prompt) => ({ promptName: prompt.promptName, role: prompt.role })),
+    };
+  }, [settings, session]);
+
   const addEntry = useCallback(
     async (
-      entry: WIEntry,
+      entry: ExtendedWIEntry,
       selectedWorldName: string,
       skipSave: boolean = false,
     ): Promise<'added' | 'updated' | 'unchanged'> => {
@@ -208,16 +326,10 @@ export const MainPopup: FC = () => {
 
       const existingEntry = worldInfoCopy[selectedWorldName].find((e) => e.uid === entry.uid);
       const isUpdate = !!existingEntry;
-      let targetEntry: WIEntry;
+      let targetEntry: ExtendedWIEntry;
 
       if (isUpdate) {
-        // This is an update. Check if anything actually changed.
-        const contentChanged = (entry.content || '') !== (existingEntry!.content || '');
-        const commentChanged = (entry.comment || '') !== (existingEntry!.comment || '');
-        const keysChanged =
-          (entry.key || []).slice().sort().join(',') !== (existingEntry!.key || []).slice().sort().join(',');
-
-        if (!contentChanged && !commentChanged && !keysChanged) {
+        if (!hasEntryChanges(entry, existingEntry!)) {
           return 'unchanged'; // Nothing to do.
         }
         targetEntry = existingEntry!;
@@ -229,7 +341,7 @@ export const MainPopup: FC = () => {
         worldInfoCopy[selectedWorldName].push(targetEntry);
       }
 
-      Object.assign(targetEntry, { key: entry.key, content: entry.content, comment: entry.comment });
+      Object.assign(targetEntry, buildEntryUpdatePayload(entry));
       setEntriesGroupByWorldName(worldInfoCopy);
 
       if (!skipSave) {
@@ -244,7 +356,7 @@ export const MainPopup: FC = () => {
   );
 
   const handleGeneration = useCallback(
-    async (continueFrom?: { worldName: string; entry: WIEntry; prompt: string; mode: 'continue' | 'revise' }) => {
+    async (continueFrom?: { worldName: string; entry: ExtendedWIEntry; prompt: string; mode: 'continue' | 'revise' }) => {
       if (!settings.profileId) return st_echo('warning', 'Please select a connection profile.');
 
       const userPrompt = continueFrom?.prompt ?? settings.promptPresets[settings.promptPreset].content;
@@ -255,63 +367,7 @@ export const MainPopup: FC = () => {
 
       setIsGenerating(true);
       try {
-        const profile = globalContext.extensionSettings.connectionManager?.profiles?.find(
-          (p) => p.id === settings.profileId,
-        );
-        if (!profile) throw new Error('Connection profile not found.');
-
-        const avatar = getAvatar();
-        const buildPromptOptions: BuildPromptOptions = {
-          presetName: profile.preset,
-          contextName: profile.context,
-          instructName: profile.instruct,
-          syspromptName: profile.sysprompt,
-          ignoreCharacterFields: !settings.contextToSend.charCard,
-          ignoreWorldInfo: true,
-          ignoreAuthorNote: !settings.contextToSend.authorNote,
-          maxContext:
-            settings.maxContextType === 'custom'
-              ? settings.maxContextValue
-              : settings.maxContextType === 'profile'
-                ? 'preset'
-                : 'active',
-          includeNames: !!selected_group,
-        };
-
-        if (!avatar) {
-          buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
-        } else {
-          switch (settings.contextToSend.messages.type) {
-            case 'none':
-              buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
-              break;
-            case 'first':
-              buildPromptOptions.messageIndexesBetween = { start: 0, end: settings.contextToSend.messages.first ?? 10 };
-              break;
-            case 'last': {
-              const lastCount = settings.contextToSend.messages.last ?? 10;
-              const chatLength = globalContext.chat?.length ?? 0;
-              buildPromptOptions.messageIndexesBetween = {
-                end: Math.max(0, chatLength - 1),
-                start: Math.max(0, chatLength - lastCount),
-              };
-              break;
-            }
-            case 'range':
-              if (settings.contextToSend.messages.range)
-                buildPromptOptions.messageIndexesBetween = settings.contextToSend.messages.range;
-              break;
-          }
-        }
-
-        const promptSettings = structuredClone(settings.prompts);
-        if (!settings.contextToSend.stDescription) delete (promptSettings as any).stDescription;
-        if (!settings.contextToSend.worldInfo || session.selectedWorldNames.length === 0)
-          delete (promptSettings as any).currentLorebooks;
-        const anySuggestedEntries = Object.values(session.suggestedEntries).some((e) => e.length > 0);
-        if (!settings.contextToSend.suggestedEntries || !anySuggestedEntries)
-          delete (promptSettings as any).suggestedLorebooks;
-        if (session.blackListedEntries.length === 0) delete (promptSettings as any).blackListedEntries;
+        const { buildPromptOptions, promptSettings, mainContextList } = buildRecommendationRequestContext();
 
         const continueFromPayload = continueFrom
           ? { worldName: continueFrom.worldName, entry: continueFrom.entry, mode: continueFrom.mode }
@@ -324,9 +380,7 @@ export const MainPopup: FC = () => {
           session,
           entriesGroupByWorldName,
           promptSettings,
-          mainContextList: settings.mainContextTemplatePresets[settings.mainContextTemplatePreset].prompts
-            .filter((p) => p.enabled)
-            .map((p) => ({ promptName: p.promptName, role: p.role })),
+          mainContextList,
           maxResponseToken: settings.maxResponseToken,
           continueFrom: continueFromPayload,
         });
@@ -344,7 +398,7 @@ export const MainPopup: FC = () => {
                 );
 
                 if (entryIndex !== -1) {
-                  newSuggested[worldName][entryIndex] = updatedEntry;
+                  newSuggested[worldName][entryIndex] = normalizeExtendedEntry(updatedEntry);
                 }
               }
               return { ...prev, suggestedEntries: newSuggested };
@@ -356,7 +410,7 @@ export const MainPopup: FC = () => {
                 if (!newSuggested[worldName]) newSuggested[worldName] = [];
                 for (const entry of entries) {
                   if (!newSuggested[worldName].some((e) => e.uid === entry.uid && e.comment === entry.comment)) {
-                    newSuggested[worldName].push(entry);
+                    newSuggested[worldName].push(normalizeExtendedEntry(entry));
                   }
                 }
               }
@@ -373,11 +427,79 @@ export const MainPopup: FC = () => {
         setIsGenerating(false);
       }
     },
-    [settings, session, entriesGroupByWorldName],
+    [settings, session, entriesGroupByWorldName, buildRecommendationRequestContext],
   );
 
+  const currentPromptText = settings.promptPresets[settings.promptPreset]?.content ?? '';
+  const previewDependencyKey = JSON.stringify({
+    profileId: settings.profileId,
+    promptPreset: settings.promptPreset,
+    promptText: currentPromptText,
+    contextToSend: settings.contextToSend,
+    maxContextType: settings.maxContextType,
+    maxContextValue: settings.maxContextValue,
+    prompts: settings.prompts,
+    mainContextTemplatePreset: settings.mainContextTemplatePreset,
+    mainContextTemplatePresets: settings.mainContextTemplatePresets,
+    session,
+  });
+
+  useEffect(() => {
+    if (isLoading || activeTab !== 'recommender' || suggestionTab !== 'preview') {
+      return;
+    }
+
+    let cancelled = false;
+    setIsPreviewLoading(true);
+    setPreviewError('');
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const { buildPromptOptions, promptSettings, mainContextList } = buildRecommendationRequestContext();
+        const messages = await buildRecommendationMessages({
+          profileId: settings.profileId,
+          userPrompt: currentPromptText,
+          buildPromptOptions,
+          session,
+          entriesGroupByWorldName,
+          promptSettings,
+          mainContextList,
+        });
+
+        if (!cancelled) {
+          setPreviewMessages(messages);
+          setPreviewError('');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPreviewMessages([]);
+          setPreviewError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsPreviewLoading(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    activeTab,
+    suggestionTab,
+    isLoading,
+    settings.profileId,
+    currentPromptText,
+    previewDependencyKey,
+    session,
+    entriesGroupByWorldName,
+    buildRecommendationRequestContext,
+  ]);
+
   const handleAddSingleEntry = useCallback(
-    async (entry: WIEntry, worldName: string, selectedTargetWorld: string) => {
+    async (entry: ExtendedWIEntry, worldName: string, selectedTargetWorld: string) => {
       try {
         const status = await addEntry(entry, selectedTargetWorld);
         if (status === 'unchanged') {
@@ -418,7 +540,8 @@ export const MainPopup: FC = () => {
     let updatedCount = 0;
     let unchangedCount = 0;
     const modifiedWorlds = new Set<string>();
-    const entriesToAdd: { worldName: string; entry: WIEntry }[] = [];
+    const entriesToAdd: { worldName: string; entry: ExtendedWIEntry }[] = [];
+    const workingEntries = structuredClone(entriesGroupByWorldName);
 
     Object.entries(session.suggestedEntries).forEach(([worldName, entries]) => {
       entries.forEach((entry) => {
@@ -429,14 +552,33 @@ export const MainPopup: FC = () => {
 
     for (const { worldName, entry } of entriesToAdd) {
       try {
-        const status = await addEntry(entry, worldName, true);
-        if (status === 'added') addedCount++;
-        else if (status === 'updated') updatedCount++;
-        else unchangedCount++;
-
-        if (status !== 'unchanged') {
-          modifiedWorlds.add(worldName);
+        if (!workingEntries[worldName]) {
+          workingEntries[worldName] = [];
         }
+
+        const existingEntry = workingEntries[worldName].find((item) => item.uid === entry.uid);
+        const isUpdate = !!existingEntry;
+        let targetEntry: ExtendedWIEntry;
+
+        if (isUpdate) {
+          if (!hasEntryChanges(entry, existingEntry!)) {
+            unchangedCount++;
+            continue;
+          }
+          targetEntry = existingEntry!;
+        } else {
+          const stFormat = { entries: Object.fromEntries(workingEntries[worldName].map((item) => [item.uid, item])) };
+          const newEntry = st_createWorldInfoEntry(worldName, stFormat);
+          if (!newEntry) throw new Error('Failed to create new World Info entry.');
+          targetEntry = newEntry;
+          workingEntries[worldName].push(targetEntry);
+        }
+
+        Object.assign(targetEntry, buildEntryUpdatePayload(entry));
+        const status = isUpdate ? 'updated' : 'added';
+        if (status === 'added') addedCount++;
+        else updatedCount++;
+        modifiedWorlds.add(worldName);
       } catch (error) {
         st_echo('error', `Failed to process entry: ${entry.comment}`);
       }
@@ -444,7 +586,7 @@ export const MainPopup: FC = () => {
 
     for (const worldName of modifiedWorlds) {
       try {
-        const finalFormat = { entries: Object.fromEntries(entriesGroupByWorldName[worldName].map((e) => [e.uid, e])) };
+        const finalFormat = { entries: Object.fromEntries(workingEntries[worldName].map((e) => [e.uid, e])) };
         await globalContext.saveWorldInfo(worldName, finalFormat);
         globalContext.reloadWorldInfoEditor(worldName, true);
       } catch (error) {
@@ -452,6 +594,7 @@ export const MainPopup: FC = () => {
       }
     }
 
+    setEntriesGroupByWorldName(workingEntries);
     setSession((prev) => ({ ...prev, suggestedEntries: {} }));
     st_echo('success', `Processed: ${addedCount} new, ${updatedCount} updated, ${unchangedCount} unchanged.`);
     setIsGenerating(false);
@@ -474,7 +617,7 @@ export const MainPopup: FC = () => {
     }
   };
 
-  const handleRemoveEntry = (entry: WIEntry, worldName: string, isBlacklist: boolean) => {
+  const handleRemoveEntry = (entry: ExtendedWIEntry, worldName: string, isBlacklist: boolean) => {
     setSession((prev) => {
       const newSession = { ...prev };
       if (isBlacklist) {
@@ -493,8 +636,8 @@ export const MainPopup: FC = () => {
 
   const handleUpdateEntry = (
     worldName: string,
-    originalEntry: WIEntry,
-    updatedEntry: WIEntry,
+    originalEntry: ExtendedWIEntry,
+    updatedEntry: ExtendedWIEntry,
     updatedRegexIds?: Record<string, Partial<RegexScriptData>>,
   ) => {
     setSession((prev) => {
@@ -505,7 +648,7 @@ export const MainPopup: FC = () => {
         );
 
         if (entryIndex !== -1) {
-          newSuggested[worldName][entryIndex] = updatedEntry;
+          newSuggested[worldName][entryIndex] = normalizeExtendedEntry(updatedEntry);
         }
       }
       const newSessionState = { ...prev, suggestedEntries: newSuggested };
@@ -534,7 +677,7 @@ export const MainPopup: FC = () => {
 
             const entryToImport = entriesGroupByWorldName[worldName].find((e) => e.uid === uid);
             if (entryToImport) {
-              newSuggested[worldName].push(structuredClone(entryToImport));
+              newSuggested[worldName].push(normalizeExtendedEntry(entryToImport));
               importCount++;
             }
           }
@@ -548,8 +691,50 @@ export const MainPopup: FC = () => {
     [entriesGroupByWorldName],
   );
 
+  const handleSaveEditorEntries = useCallback(
+    async (worldName: string, payloads: SaveEntryPayload[]) => {
+      const worldInfoCopy = structuredClone(entriesGroupByWorldName);
+      const worldEntries = worldInfoCopy[worldName] ?? [];
+
+      payloads.forEach(({ entry, originalUid }) => {
+        const normalizedEntry = normalizeExtendedEntry(entry);
+        const existingIndex = worldEntries.findIndex((item) => item.uid === originalUid);
+        if (existingIndex === -1) {
+          worldEntries.push(normalizedEntry);
+          return;
+        }
+
+        worldEntries[existingIndex] = {
+          ...worldEntries[existingIndex],
+          ...buildEntryUpdatePayload(normalizedEntry),
+          uid: worldEntries[existingIndex].uid,
+        };
+      });
+
+      const normalizedEntries = worldEntries.map((entry) => normalizeExtendedEntry(entry));
+      worldInfoCopy[worldName] = normalizedEntries;
+      setEntriesGroupByWorldName(worldInfoCopy);
+
+      const finalFormat = { entries: Object.fromEntries(normalizedEntries.map((entry) => [entry.uid, entry])) };
+      await globalContext.saveWorldInfo(worldName, finalFormat);
+      globalContext.reloadWorldInfoEditor(worldName, true);
+    },
+    [entriesGroupByWorldName],
+  );
+
+  const handleReplaceEditorWorldEntries = useCallback(
+    async (worldName: string, entries: ExtendedWIEntry[]) => {
+      const normalizedEntries = entries.map((entry) => normalizeExtendedEntry(entry));
+      setEntriesGroupByWorldName((previous) => ({ ...previous, [worldName]: normalizedEntries }));
+      const finalFormat = { entries: Object.fromEntries(normalizedEntries.map((entry) => [entry.uid, entry])) };
+      await globalContext.saveWorldInfo(worldName, finalFormat);
+      globalContext.reloadWorldInfoEditor(worldName, true);
+    },
+    [],
+  );
+
   const entriesForSelectionPopup = useMemo(() => {
-    const result: Record<string, WIEntry[]> = {};
+    const result: Record<string, ExtendedWIEntry[]> = {};
     session.selectedWorldNames.forEach((worldName) => {
       if (entriesGroupByWorldName[worldName]) {
         result[worldName] = entriesGroupByWorldName[worldName];
@@ -559,8 +744,8 @@ export const MainPopup: FC = () => {
   }, [session.selectedWorldNames, entriesGroupByWorldName]);
 
   const entriesForGlobalRevise = useMemo(() => {
-    const mergedState: Record<string, WIEntry[]> = JSON.parse(JSON.stringify(entriesForSelectionPopup));
-    const suggestedByUid = new Map<number, { worldName: string; entry: WIEntry }>();
+    const mergedState: Record<string, ExtendedWIEntry[]> = JSON.parse(JSON.stringify(entriesForSelectionPopup));
+    const suggestedByUid = new Map<number, { worldName: string; entry: ExtendedWIEntry }>();
 
     Object.entries(session.suggestedEntries).forEach(([worldName, entries]) => {
       entries.forEach((entry) => {
@@ -591,16 +776,16 @@ export const MainPopup: FC = () => {
     return mergedState;
   }, [entriesForSelectionPopup, session.suggestedEntries]);
 
-  const handleApplyGlobalRevise = (newState: Record<string, WIEntry[]>) => {
+  const handleApplyGlobalRevise = (newState: Record<string, ExtendedWIEntry[]>) => {
     // Create a map of all original entries for efficient lookup. Key is "worldName::uid".
-    const originalEntriesMap = new Map<string, WIEntry>();
+    const originalEntriesMap = new Map<string, ExtendedWIEntry>();
     Object.entries(entriesGroupByWorldName).forEach(([worldName, entries]) => {
       entries.forEach((entry) => {
         originalEntriesMap.set(`${worldName}::${entry.uid}`, entry);
       });
     });
 
-    const newSuggestedEntries: Record<string, WIEntry[]> = {};
+    const newSuggestedEntries: Record<string, ExtendedWIEntry[]> = {};
 
     // Iterate through the state returned by the revise session.
     Object.entries(newState).forEach(([worldName, entries]) => {
@@ -613,13 +798,7 @@ export const MainPopup: FC = () => {
           // The entry is new; it didn't exist in the original lorebooks.
           isSuggestion = true;
         } else {
-          // The entry existed. We must check if it was modified.
-          const contentChanged = (revisedEntry.content || '') !== (originalEntry.content || '');
-          const commentChanged = (revisedEntry.comment || '') !== (originalEntry.comment || '');
-          const keysChanged =
-            (revisedEntry.key || []).slice().sort().join(',') !== (originalEntry.key || []).slice().sort().join(',');
-
-          if (contentChanged || commentChanged || keysChanged) {
+          if (hasEntryChanges(revisedEntry, originalEntry)) {
             isSuggestion = true;
           }
         }
@@ -665,7 +844,22 @@ export const MainPopup: FC = () => {
     <>
       <div id="worldInfoRecommenderPopup">
         <h2>World Info Recommender</h2>
-        <div className="container">
+        <div className="top-tab-bar">
+          <STButton
+            className={`menu_button ${activeTab === 'recommender' ? 'active' : ''}`}
+            onClick={() => setActiveTab('recommender')}
+          >
+            Recommender
+          </STButton>
+          <STButton
+            className={`menu_button ${activeTab === 'editor' ? 'active' : ''}`}
+            onClick={() => setActiveTab('editor')}
+          >
+            Lorebook Editor
+          </STButton>
+        </div>
+        {activeTab === 'recommender' ? (
+          <div className="container">
           <div className="column">
             <div className="card">
               <h3>Connection Profile</h3>
@@ -959,58 +1153,95 @@ export const MainPopup: FC = () => {
           </div>
           <div className="wide-column">
             <div className="card">
-              <h3>Suggested Entries</h3>
-              <div className="actions">
+              <div className="panel-tab-bar">
                 <STButton
-                  onClick={handleAddAll}
-                  disabled={isGenerating || suggestedEntriesList.length === 0}
-                  className="menu_button interactable"
+                  className={`menu_button ${suggestionTab === 'suggestions' ? 'active' : ''}`}
+                  onClick={() => setSuggestionTab('suggestions')}
                 >
-                  Add All
+                  Suggested Entries
                 </STButton>
                 <STButton
-                  onClick={() => setIsGlobalReviseOpen(true)}
-                  disabled={isGenerating}
-                  className="menu_button interactable"
-                  title="Revise all selected existing entries and current suggestions in a single chat session"
+                  className={`menu_button ${suggestionTab === 'preview' ? 'active' : ''}`}
+                  onClick={() => setSuggestionTab('preview')}
                 >
-                  <i className="fa-solid fa-comments"></i> Global Revise
-                </STButton>
-                <STButton
-                  onClick={() => setIsImporting(true)}
-                  disabled={isGenerating}
-                  className="menu_button interactable"
-                  title="Import existing entries to continue/revise them"
-                >
-                  Import Entry
-                </STButton>
-                <STButton onClick={handleReset} disabled={isGenerating} className="menu_button interactable">
-                  Reset
+                  Prompt Preview
                 </STButton>
               </div>
-              <div>
-                {suggestedEntriesList.length === 0 && <p>No suggestions yet. Send a prompt to get started!</p>}
-                {suggestedEntriesList.map(({ worldName, entry }) => (
-                  <SuggestedEntry
-                    key={`${worldName}-${entry.uid}-${entry.comment}`}
-                    initialWorldName={worldName}
-                    entry={entry}
-                    allWorldNames={allWorldNames}
-                    existingEntry={entriesGroupByWorldName[worldName]?.find((e) => e.uid === entry.uid)}
-                    sessionRegexIds={session.regexIds}
-                    onAdd={handleAddSingleEntry}
-                    onRemove={handleRemoveEntry}
-                    onContinue={handleGeneration}
-                    onUpdate={handleUpdateEntry}
-                    entriesGroupByWorldName={entriesGroupByWorldName}
-                    sessionForContext={session}
-                    contextToSend={settings.contextToSend}
-                  />
-                ))}
-              </div>
+              {suggestionTab === 'suggestions' ? (
+                <>
+                  <div className="actions">
+                    <STButton
+                      onClick={handleAddAll}
+                      disabled={isGenerating || suggestedEntriesList.length === 0}
+                      className="menu_button interactable"
+                    >
+                      Add All
+                    </STButton>
+                    <STButton
+                      onClick={() => setIsGlobalReviseOpen(true)}
+                      disabled={isGenerating}
+                      className="menu_button interactable"
+                      title="Revise all selected existing entries and current suggestions in a single chat session"
+                    >
+                      <i className="fa-solid fa-comments"></i> Global Revise
+                    </STButton>
+                    <STButton
+                      onClick={() => setIsImporting(true)}
+                      disabled={isGenerating}
+                      className="menu_button interactable"
+                      title="Import existing entries to continue/revise them"
+                    >
+                      Import Entry
+                    </STButton>
+                    <STButton onClick={handleReset} disabled={isGenerating} className="menu_button interactable">
+                      Reset
+                    </STButton>
+                  </div>
+                  <div>
+                    {suggestedEntriesList.length === 0 && <p>No suggestions yet. Send a prompt to get started!</p>}
+                    {suggestedEntriesList.map(({ worldName, entry }) => (
+                      <SuggestedEntry
+                        key={`${worldName}-${entry.uid}-${entry.comment}`}
+                        initialWorldName={worldName}
+                        entry={entry}
+                        allWorldNames={allWorldNames}
+                        existingEntry={entriesGroupByWorldName[worldName]?.find((e) => e.uid === entry.uid)}
+                        sessionRegexIds={session.regexIds}
+                        onAdd={handleAddSingleEntry}
+                        onRemove={handleRemoveEntry}
+                        onContinue={handleGeneration}
+                        onUpdate={handleUpdateEntry}
+                        entriesGroupByWorldName={entriesGroupByWorldName}
+                        sessionForContext={session}
+                        contextToSend={settings.contextToSend}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="prompt-preview-panel">
+                  {isPreviewLoading && <p>Updating preview...</p>}
+                  {previewError && <div className="preview-error">{previewError}</div>}
+                  {!isPreviewLoading && !previewError && previewMessages.length === 0 && <p>No prompt messages to preview.</p>}
+                  {previewMessages.map((message, index) => (
+                    <section key={`${message.role}-${index}`} className={`preview-message ${message.role}`}>
+                      <div className="preview-message-role">{message.role}</div>
+                      <pre>{message.content}</pre>
+                    </section>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
-        </div>
+          </div>
+        ) : (
+          <LorebookEditor
+            entriesGroupByWorldName={entriesGroupByWorldName}
+            onSaveEntries={handleSaveEditorEntries}
+            onReplaceWorldEntries={handleReplaceEditorWorldEntries}
+            onRefreshEntries={loadData}
+          />
+        )}
       </div>
       {isSelectingEntries && (
         <Popup

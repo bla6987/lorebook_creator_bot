@@ -9,7 +9,16 @@ import {
 } from 'sillytavern-utils-lib/components/react';
 import { st_runRegexScript } from 'sillytavern-utils-lib/config';
 import { RegexScriptData } from 'sillytavern-utils-lib/types/regex';
-import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
+import { ExtendedWIEntry } from '../types.js';
+import {
+  ACTIVATION_OPTIONS,
+  ActivationMode,
+  POSITION_OPTIONS,
+  ROLE_OPTIONS,
+  getActivationMode,
+  getActivationUpdates,
+  parseNumberInput,
+} from './lorebookEditorUtils.js';
 
 const globalContext = SillyTavern.getContext();
 
@@ -17,7 +26,7 @@ const globalContext = SillyTavern.getContext();
  * The props for the EditEntryPopup component.
  */
 interface EditEntryPopupProps {
-  entry: WIEntry;
+  entry: ExtendedWIEntry;
   initialRegexIds: Record<string, Partial<RegexScriptData>>;
 }
 
@@ -27,7 +36,7 @@ interface EditEntryPopupProps {
  */
 export interface EditEntryPopupRef {
   getFormData: () => {
-    updatedEntry: WIEntry;
+    updatedEntry: ExtendedWIEntry;
     updatedRegexIds: Record<string, Partial<RegexScriptData>>;
   };
 }
@@ -40,9 +49,14 @@ export interface EditEntryPopupRef {
 export const EditEntryPopup = forwardRef<EditEntryPopupRef, EditEntryPopupProps>(({ entry, initialRegexIds }, ref) => {
   // --- Internal State Management ---
   const [allRegexes, setAllRegexes] = useState<RegexScriptData[]>([]);
-  const [title, setTitle] = useState(entry.comment);
-  const [keywords, setKeywords] = useState(entry.key.join(', '));
-  const [content, setContent] = useState(entry.content);
+  const [title, setTitle] = useState(entry.comment ?? '');
+  const [keywords, setKeywords] = useState((entry.key ?? []).join(', '));
+  const [content, setContent] = useState(entry.content ?? '');
+  const [activationMode, setActivationMode] = useState<ActivationMode>(getActivationMode(entry));
+  const [position, setPosition] = useState(entry.position?.toString() ?? '');
+  const [order, setOrder] = useState(entry.order?.toString() ?? '');
+  const [depth, setDepth] = useState(entry.depth?.toString() ?? '4');
+  const [role, setRole] = useState((entry.role ?? 0).toString());
   const [regexListItems, setRegexListItems] = useState<SortableListItemData[]>([]);
 
   useEffect(() => {
@@ -65,7 +79,8 @@ export const EditEntryPopup = forwardRef<EditEntryPopupRef, EditEntryPopupProps>
   // It's the bridge that allows the parent's "OK" button to retrieve this component's final state.
   useImperativeHandle(ref, () => ({
     getFormData: () => {
-      const updatedEntry: WIEntry = {
+      const nextPosition = parseNumberInput(position);
+      const updatedEntry: ExtendedWIEntry = {
         ...entry,
         comment: title.trim(),
         key: keywords
@@ -73,6 +88,11 @@ export const EditEntryPopup = forwardRef<EditEntryPopupRef, EditEntryPopupProps>
           .map((k) => k.trim())
           .filter(Boolean),
         content,
+        ...getActivationUpdates(activationMode),
+        order: parseNumberInput(order),
+        position: nextPosition,
+        depth: nextPosition === 4 ? (parseNumberInput(depth) ?? 4) : null,
+        role: nextPosition === 4 ? (parseNumberInput(role) ?? 0) : null,
       };
 
       const updatedRegexIds = regexListItems.reduce(
@@ -131,6 +151,51 @@ export const EditEntryPopup = forwardRef<EditEntryPopupRef, EditEntryPopupProps>
       <div>
         <label>Keywords (comma-separated)</label>
         <input type="text" className="text_pole" value={keywords} onChange={(e) => setKeywords(e.target.value)} />
+      </div>
+      <div className="edit-popup-grid">
+        <label>
+          Activation
+          <select className="text_pole" value={activationMode} onChange={(e) => setActivationMode(e.target.value as ActivationMode)}>
+            {ACTIVATION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Position
+          <select className="text_pole" value={position} onChange={(e) => setPosition(e.target.value)}>
+            <option value="">Unset</option>
+            {POSITION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Order
+          <input className="text_pole" type="number" value={order} onChange={(e) => setOrder(e.target.value)} />
+        </label>
+        {position === '4' && (
+          <>
+            <label>
+              Depth
+              <input className="text_pole" type="number" min="0" value={depth} onChange={(e) => setDepth(e.target.value)} />
+            </label>
+            <label>
+              Role
+              <select className="text_pole" value={role} onChange={(e) => setRole(e.target.value)}>
+                {ROLE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
       </div>
       <div>
         <h4>Apply Regex Scripts</h4>

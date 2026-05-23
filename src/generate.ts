@@ -6,13 +6,14 @@ import { st_createWorldInfoEntry } from 'sillytavern-utils-lib/config';
 import { ExtensionSettings, MessageRole } from './settings.js';
 import { RegexScriptData } from 'sillytavern-utils-lib/types/regex';
 import { getRuntimeConnectionProfile, withRuntimeConnectionProfile } from './api-settings.js';
+import { ExtendedWIEntry } from './types.js';
 
 import * as Handlebars from 'handlebars';
 
 export const globalContext = SillyTavern.getContext();
 
 export interface Session {
-  suggestedEntries: Record<string, WIEntry[]>;
+  suggestedEntries: Record<string, ExtendedWIEntry[]>;
   blackListedEntries: string[];
   selectedWorldNames: string[];
   selectedEntryUids: Record<string, number[]>;
@@ -22,22 +23,25 @@ export interface Session {
 // @ts-ignore
 const dumbSettings = new ExtensionSettingsManager<ExtensionSettings>('dumb', {}).getSettings();
 
-export interface RunWorldInfoRecommendationParams {
+export interface BuildRecommendationMessagesParams {
   profileId: string;
   userPrompt: string;
   buildPromptOptions: BuildPromptOptions;
   session: Session;
-  entriesGroupByWorldName: Record<string, WIEntry[]>;
+  entriesGroupByWorldName: Record<string, ExtendedWIEntry[]>;
   promptSettings: typeof dumbSettings.prompts;
   mainContextList: {
     promptName: string;
     role: MessageRole;
   }[];
-  maxResponseToken: number;
-  continueFrom?: { worldName: string; entry: WIEntry; mode: 'continue' | 'revise' };
+  continueFrom?: { worldName: string; entry: ExtendedWIEntry; mode: 'continue' | 'revise' };
 }
 
-export async function runWorldInfoRecommendation({
+export interface RunWorldInfoRecommendationParams extends BuildRecommendationMessagesParams {
+  maxResponseToken: number;
+}
+
+export async function buildRecommendationMessages({
   profileId,
   userPrompt,
   buildPromptOptions,
@@ -45,9 +49,8 @@ export async function runWorldInfoRecommendation({
   entriesGroupByWorldName,
   promptSettings,
   mainContextList,
-  maxResponseToken,
   continueFrom,
-}: RunWorldInfoRecommendationParams): Promise<Record<string, WIEntry[]>> {
+}: BuildRecommendationMessagesParams): Promise<Message[]> {
   if (!profileId) {
     throw new Error('No connection profile selected.');
   }
@@ -87,7 +90,7 @@ export async function runWorldInfoRecommendation({
   }
 
   {
-    const lorebooks: Record<string, WIEntry[]> = {};
+    const lorebooks: Record<string, ExtendedWIEntry[]> = {};
     Object.entries(entriesGroupByWorldName)
       .filter(
         ([worldName, entries]) =>
@@ -112,7 +115,7 @@ export async function runWorldInfoRecommendation({
   }
 
   {
-    const lorebooks: Record<string, WIEntry[]> = {};
+    const lorebooks: Record<string, ExtendedWIEntry[]> = {};
     Object.entries(session.suggestedEntries)
       .filter(([_, entries]) => entries.length > 0)
       .forEach(([worldName, entries]) => {
@@ -177,7 +180,15 @@ export async function runWorldInfoRecommendation({
     }
   }
 
-  // console.log("Sending messages:", messages);
+  return messages;
+}
+
+export async function runWorldInfoRecommendation({
+  maxResponseToken,
+  ...messageParams
+}: RunWorldInfoRecommendationParams): Promise<Record<string, ExtendedWIEntry[]>> {
+  const { profileId, entriesGroupByWorldName, continueFrom } = messageParams;
+  const messages = await buildRecommendationMessages(messageParams);
 
   const response = (await withRuntimeConnectionProfile(profileId, async (requestProfileId) =>
     globalContext.ConnectionManagerRequestService.sendRequest(requestProfileId, messages, maxResponseToken),
