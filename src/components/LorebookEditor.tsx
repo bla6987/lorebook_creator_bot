@@ -1,7 +1,11 @@
 import { ChangeEvent, CSSProperties, FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { STButton } from 'sillytavern-utils-lib/components/react';
+import { Popup, STButton } from 'sillytavern-utils-lib/components/react';
 import { st_echo } from 'sillytavern-utils-lib/config';
 import { ExtendedWIEntry, SaveEntryPayload } from '../types.js';
+import { Session } from '../generate.js';
+import { ExtensionSettings } from '../settings.js';
+import { ReviseSessionManager } from './ReviseSessionManager.js';
+import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import {
   ACTIVATION_OPTIONS,
   LorebookCategory,
@@ -20,6 +24,7 @@ import {
   getPositionLabel,
   getRoleLabel,
   normalizeEntriesByWorld,
+  normalizeExtendedEntry,
   parseNumberInput,
   sanitizeCategoryColor,
   sanitizeCategoryIcon,
@@ -42,6 +47,8 @@ interface LorebookEditorProps {
   onSaveEntries: (worldName: string, entries: SaveEntryPayload[]) => Promise<void>;
   onReplaceWorldEntries: (worldName: string, entries: ExtendedWIEntry[]) => Promise<void>;
   onRefreshEntries: () => void | Promise<void>;
+  sessionForContext: Session;
+  contextToSend: ExtensionSettings['contextToSend'];
 }
 
 interface EntryEditorProps {
@@ -57,6 +64,7 @@ interface EntryEditorProps {
   onCategoryChange: (worldName: string, uid: number, categoryId: string) => void;
   onSave: (worldName: string, uid: number) => void | Promise<void>;
   onDelete: (worldName: string, uid: number) => void | Promise<void>;
+  onRevise: (worldName: string, uid: number) => void;
 }
 
 const readJsonStorage = <T,>(key: string, fallback: T): T => {
@@ -105,6 +113,7 @@ const EntryEditor: FC<EntryEditorProps> = ({
   onCategoryChange,
   onSave,
   onDelete,
+  onRevise,
 }) => {
   const selectedCategory = categories.find((category) => category.id === categoryId);
   const activationMode = getActivationMode(entry);
@@ -249,6 +258,9 @@ const EntryEditor: FC<EntryEditorProps> = ({
       )}
 
       <div className="entry-card-actions">
+        <STButton className="menu_button" onClick={() => onRevise(worldName, entry.uid)}>
+          <i className="fa-solid fa-comments"></i> AI Revise
+        </STButton>
         <STButton className="menu_button" disabled={!isDirty} onClick={() => onSave(worldName, entry.uid)}>
           Save Entry
         </STButton>
@@ -265,6 +277,8 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   onSaveEntries,
   onReplaceWorldEntries,
   onRefreshEntries,
+  sessionForContext,
+  contextToSend,
 }) => {
   const normalizedEntries = useMemo(
     () => normalizeEntriesByWorld(entriesGroupByWorldName),
@@ -318,6 +332,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const [bulkPosition, setBulkPosition] = useState('');
   const [bulkDepth, setBulkDepth] = useState('4');
   const [bulkRole, setBulkRole] = useState('0');
+  const [reviseTarget, setReviseTarget] = useState<{ worldName: string; uid: number } | null>(null);
 
   const lastSelectedIdRef = useRef<string | null>(null);
 
@@ -393,6 +408,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     () => visibleEntries.filter((entry) => selectedIds.has(getEntryIdentity(selectedWorldName, entry.uid))),
     [selectedIds, selectedWorldName, visibleEntries],
   );
+  const reviseEntry = useMemo(() => {
+    if (!reviseTarget) return undefined;
+    if (deletedIds.has(getEntryIdentity(reviseTarget.worldName, reviseTarget.uid))) return undefined;
+    return draftEntries[reviseTarget.worldName]?.find((entry) => entry.uid === reviseTarget.uid);
+  }, [deletedIds, draftEntries, reviseTarget]);
 
   const allVisibleSelected = visibleEntries.length > 0 && selectedEntries.length === visibleEntries.length;
   const hasUnsavedChanges = dirtyIds.size > 0 || deletedIds.size > 0;
@@ -694,6 +714,26 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     st_echo('success', `Exported ${selectedWorldName} backup.`);
   };
 
+  const handleApplyReviseEntry = ({
+    worldName,
+    updatedEntry,
+  }: {
+    worldName: string;
+    originalEntry: ExtendedWIEntry;
+    updatedEntry: ExtendedWIEntry;
+  }) => {
+    const normalizedEntry = normalizeExtendedEntry(updatedEntry);
+    setDraftEntries((previous) => {
+      const entries = previous[worldName] ?? [];
+      return {
+        ...previous,
+        [worldName]: entries.map((entry) => (entry.uid === normalizedEntry.uid ? normalizedEntry : entry)),
+      };
+    });
+    markDirty(worldName, normalizedEntry.uid);
+    st_echo('success', `Applied AI revision to "${normalizedEntry.comment || `UID ${normalizedEntry.uid}`}".`);
+  };
+
   if (worldNames.length === 0) {
     return (
       <div className="lorebook-editor empty-state">
@@ -889,11 +929,30 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
                 onCategoryChange={handleEntryCategoryChange}
                 onSave={handleSaveEntry}
                 onDelete={handleDeleteEntry}
+                onRevise={(worldName, uid) => setReviseTarget({ worldName, uid })}
               />
             ))
           )}
         </section>
       </div>
+      {reviseTarget && reviseEntry && (
+        <Popup
+          type={POPUP_TYPE.DISPLAY}
+          content={
+            <ReviseSessionManager
+              target={{ type: 'entry', worldName: reviseTarget.worldName, entry: reviseEntry }}
+              initialState={reviseEntry}
+              onClose={() => setReviseTarget(null)}
+              onApply={handleApplyReviseEntry}
+              sessionForContext={sessionForContext}
+              allEntries={draftEntries}
+              contextToSend={contextToSend}
+            />
+          }
+          onComplete={() => setReviseTarget(null)}
+          options={{ wide: true, large: true }}
+        />
+      )}
     </div>
   );
 };

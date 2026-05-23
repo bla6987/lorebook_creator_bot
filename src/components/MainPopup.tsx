@@ -1240,6 +1240,8 @@ export const MainPopup: FC = () => {
             onSaveEntries={handleSaveEditorEntries}
             onReplaceWorldEntries={handleReplaceEditorWorldEntries}
             onRefreshEntries={loadData}
+            sessionForContext={session}
+            contextToSend={settings.contextToSend}
           />
         )}
       </div>
