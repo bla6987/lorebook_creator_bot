@@ -9,7 +9,21 @@
 }
 
 .popup-content:has(#worldInfoRecommenderPopup) {
+    max-width: 100%;
+    overflow-x: hidden;
     overflow-y: auto;
+}
+
+dialog.popup:has(#worldInfoRecommenderPopup) {
+    width: min(1500px, 90dvw);
+    max-width: min(1500px, calc(100dvw - 2em)) !important;
+}
+
+@media (max-width: 900px) {
+    dialog.popup:has(#worldInfoRecommenderPopup) {
+        width: calc(100dvw - 0.75em);
+        max-width: calc(100dvw - 0.75em) !important;
+    }
 }
 
 .popup-content:has(.edit-popup) {
@@ -744,8 +758,8 @@ dialog:has(.select-entries-popup) {
     --wirc-purple: #6e43a7;
     --wirc-red: #9c3031;
 
-    width: min(1500px, 96dvw);
-    max-width: none;
+    width: 100%;
+    max-width: 100%;
     min-height: min(760px, 86dvh);
     margin: 0 auto;
     padding: 10px;
