@@ -880,6 +880,19 @@ dialog:has(.select-entries-popup) {
         border-radius: 8px;
     }
 
+    .revise-active-profile {
+        max-width: 220px;
+        min-width: 140px;
+        padding: 6px 8px;
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        background-color: var(--SmartThemeBlurTintColor);
+        color: var(--SmartThemeEmColor);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
     .initial-messages-container {
         margin-bottom: 10px;
         border: 1px solid var(--SmartThemeBorderColor);

@@ -8,6 +8,7 @@ import { buildInitialReviseMessages } from '../revise-prompt-builder.js';
 import { st_echo, selected_group, this_chid } from 'sillytavern-utils-lib/config';
 import { BuildPromptOptions } from 'sillytavern-utils-lib';
 import { Session } from '../generate.js';
+import { getRuntimeConnectionProfile } from '../api-settings.js';
 
 const globalContext = SillyTavern.getContext();
 const REVISE_SESSIONS_KEY = 'worldInfoRecommender_reviseSessions';
@@ -152,9 +153,9 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   };
 
   if (activeSession) {
-    const profile = globalContext.extensionSettings.connectionManager?.profiles?.find(
-      (p) => p.id === activeSession.profileId,
-    );
+    const currentSettings = settingsManager.getSettings();
+    const effectiveProfileId = currentSettings.profileId || activeSession.profileId;
+    const profile = getRuntimeConnectionProfile(effectiveProfileId);
     const msgContext = contextToSend.messages;
     const chatContextOptions: BuildPromptOptions = {
       targetCharacterId: this_chid,

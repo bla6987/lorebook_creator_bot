@@ -3,7 +3,6 @@ import {
   STButton,
   STTextarea,
   Popup,
-  STConnectionProfileSelect,
   STInput,
 } from 'sillytavern-utils-lib/components/react';
 import {
@@ -27,6 +26,7 @@ import { BuildPromptOptions, buildPrompt } from 'sillytavern-utils-lib';
 import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { GlobalStatePopup } from './GlobalStatePopup.js';
 import * as Handlebars from 'handlebars';
+import { getRuntimeConnectionProfile } from '../api-settings.js';
 
 const globalContext = SillyTavern.getContext();
 
@@ -288,10 +288,25 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
       revertUpdate: () => void,
     ) => {
       const settings = settingsManager.getSettings();
-      if (!session.profileId) {
-        st_echo('warning', 'Please select a connection profile for this session.');
+      const activeProfileId = settings.profileId;
+      if (!activeProfileId) {
+        st_echo('warning', 'Please select a connection profile in the main popup first.');
         return;
       }
+      const profile = getRuntimeConnectionProfile(activeProfileId);
+      const selectedApi = profile?.api ? globalContext.CONNECT_API_MAP[profile.api].selected : undefined;
+      if (!profile || !selectedApi) {
+        st_echo('warning', 'No API selected for the plugin connection profile.');
+        return;
+      }
+      const effectiveChatContextOptions: BuildPromptOptions = {
+        ...chatContextOptions,
+        presetName: profile.preset,
+        contextName: profile.context,
+        instructName: profile.instruct,
+        syspromptName: profile.sysprompt,
+      };
+
       abortControllerRef.current = new AbortController();
 
       optimisticUpdate();
@@ -299,19 +314,10 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
 
       try {
         const finalMessagesForRequest: ReviseMessage[] = [];
-        const profile = globalContext.extensionSettings.connectionManager?.profiles?.find(
-          (p: any) => p.id === session.profileId,
-        );
-        const selectedApi = profile?.api ? globalContext.CONNECT_API_MAP[profile.api].selected : undefined;
-        if (!selectedApi) {
-          st_echo('warning', 'No API selected for this session.');
-          return;
-        }
-
         for (const message of messagesToSend) {
           if (message.id === CHAT_HISTORY_PLACEHOLDER_ID) {
             if (this_chid === undefined && !selected_group) continue;
-            const prompt = await buildPrompt(selectedApi, chatContextOptions);
+            const prompt = await buildPrompt(selectedApi, effectiveChatContextOptions);
             if (prompt.warnings?.length) prompt.warnings.forEach((w) => st_echo('warning', w));
             finalMessagesForRequest.push(...(prompt.result as ReviseMessage[]));
           } else {
@@ -361,7 +367,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             content: 'Readonly mode enabled. You can only discuss with the user without making changes.',
           });
           const responseContent = await makePlainRequest(
-            session.profileId,
+            activeProfileId,
             finalMessagesForRequest,
             settings.maxResponseToken,
             abortControllerRef.current.signal,
@@ -375,14 +381,14 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
 
           const finalMessages = [...messagesToSend, assistantMessage];
           setMessages(finalMessages);
-          onSessionUpdate({ ...session, messages: finalMessages });
+          onSessionUpdate({ ...session, profileId: activeProfileId, messages: finalMessages });
         } else {
           let newSnapshot: ReviseState;
           let justification: string;
 
           if (session.type === 'entry') {
             const response = await makeStructuredRequest(
-              session.profileId,
+              activeProfileId,
               finalMessagesForRequest,
               EntryRevisionResponseSchema,
               REVISE_SCHEMA_NAME.ENTRY,
@@ -395,7 +401,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           } else {
             // 'global'
             const response = await makeStructuredRequest(
-              session.profileId,
+              activeProfileId,
               finalMessagesForRequest,
               GlobalRevisionResponseSchema,
               REVISE_SCHEMA_NAME.GLOBAL,
@@ -418,7 +424,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           finalMessages = createAndAddStateUpdateMessage(finalMessages, newSnapshot, lastState);
 
           setMessages(finalMessages);
-          onSessionUpdate({ ...session, messages: finalMessages });
+          onSessionUpdate({ ...session, profileId: activeProfileId, messages: finalMessages });
         }
       } catch (error: any) {
         if (error.name === 'AbortError') {
@@ -594,6 +600,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
   const visibleMessages = messages.filter((m) => !m.isStateUpdate);
   const initialMsgs = visibleMessages.filter((m) => m.isInitial);
   const chatMsgs = visibleMessages.filter((m) => !m.isInitial);
+  const activePluginProfile = getRuntimeConnectionProfile(settingsManager.getSettings().profileId);
 
   return (
     <div className="revise-session-chat">
@@ -608,11 +615,8 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             />
             Readonly Mode
           </label>
-          <div style={{ maxWidth: '200px' }}>
-            <STConnectionProfileSelect
-              initialSelectedProfileId={session.profileId}
-              onChange={(p) => onSessionUpdate({ ...session, profileId: p?.id ?? '' })}
-            />
+          <div className="revise-active-profile" title="Revise requests use the connection profile selected in the main plugin popup.">
+            {activePluginProfile?.name ?? 'No plugin profile selected'}
           </div>
           <select
             className="text_pole"
