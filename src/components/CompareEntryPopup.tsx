@@ -81,37 +81,21 @@ export const CompareEntryPopup: FC<CompareEntryPopupProps> = ({ originalEntry, n
           );
         })}
       </div>
-      <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+      <div className="content-diff-grid">
         {/* Original Content Column */}
-        <div style={{ flex: '1' }}>
+        <div className="content-diff-column">
           <h4>Original Content</h4>
           <div
-            style={{
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'monospace',
-              padding: '1rem',
-              border: '1px solid #ccc',
-              borderRadius: '4px',
-              maxHeight: '400px',
-              overflowY: 'auto',
-            }}
+            className="content-diff-box"
             dangerouslySetInnerHTML={{ __html: diffResult.originalHtml }}
           />
         </div>
 
         {/* New Content Column */}
-        <div style={{ flex: '1' }}>
+        <div className="content-diff-column">
           <h4>New Content (Suggestion)</h4>
           <div
-            style={{
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'monospace',
-              padding: '1rem',
-              border: '1px solid #ccc',
-              borderRadius: '4px',
-              maxHeight: '400px',
-              overflowY: 'auto',
-            }}
+            className="content-diff-box"
             dangerouslySetInnerHTML={{ __html: diffResult.newHtml }}
           />
         </div>

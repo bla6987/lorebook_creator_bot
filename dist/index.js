@@ -22567,39 +22567,23 @@ const bb = "__uncategorized__", Yu = "__all__", NE = "__no_comment__", TE = "(no
         ] }, l.label);
       })
     ] }),
-    /* @__PURE__ */ w.jsxs("div", { style: { display: "flex", gap: "1rem", marginTop: "1rem" }, children: [
-      /* @__PURE__ */ w.jsxs("div", { style: { flex: "1" }, children: [
+    /* @__PURE__ */ w.jsxs("div", { className: "content-diff-grid", children: [
+      /* @__PURE__ */ w.jsxs("div", { className: "content-diff-column", children: [
         /* @__PURE__ */ w.jsx("h4", { children: "Original Content" }),
         /* @__PURE__ */ w.jsx(
           "div",
           {
-            style: {
-              whiteSpace: "pre-wrap",
-              fontFamily: "monospace",
-              padding: "1rem",
-              border: "1px solid #ccc",
-              borderRadius: "4px",
-              maxHeight: "400px",
-              overflowY: "auto"
-            },
+            className: "content-diff-box",
             dangerouslySetInnerHTML: { __html: a.originalHtml }
           }
         )
       ] }),
-      /* @__PURE__ */ w.jsxs("div", { style: { flex: "1" }, children: [
+      /* @__PURE__ */ w.jsxs("div", { className: "content-diff-column", children: [
         /* @__PURE__ */ w.jsx("h4", { children: "New Content (Suggestion)" }),
         /* @__PURE__ */ w.jsx(
           "div",
           {
-            style: {
-              whiteSpace: "pre-wrap",
-              fontFamily: "monospace",
-              padding: "1rem",
-              border: "1px solid #ccc",
-              borderRadius: "4px",
-              maxHeight: "400px",
-              overflowY: "auto"
-            },
+            className: "content-diff-box",
             dangerouslySetInnerHTML: { __html: a.newHtml }
           }
         )
