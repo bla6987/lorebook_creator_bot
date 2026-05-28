@@ -543,8 +543,8 @@ export const MainPopup: FC = () => {
     if (totalEntries === 0) return st_echo('warning', 'No entries to add.');
 
     const confirm = await globalContext.Popup.show.confirm(
-      'Add All',
-      `Are you sure you want to add/update all ${totalEntries} suggested entries?`,
+      'Apply All Suggestions',
+      `Apply all ${totalEntries} suggested entries? Existing UIDs will be updated; unmatched suggestions will be added as new entries.`,
     );
     if (!confirm) return;
 
@@ -1405,7 +1405,7 @@ export const MainPopup: FC = () => {
                         disabled={isGenerating || suggestedEntriesList.length === 0}
                         className="menu_button interactable"
                       >
-                        <i className="fa-solid fa-plus"></i> Add All
+                        <i className="fa-solid fa-circle-check"></i> Apply All
                       </STButton>
                       <STButton onClick={handleReset} disabled={isGenerating} className="menu_button interactable">
                         <i className="fa-solid fa-rotate-left"></i> Reset
@@ -1426,7 +1426,6 @@ export const MainPopup: FC = () => {
                         initialWorldName={worldName}
                         entry={entry}
                         allWorldNames={allWorldNames}
-                        existingEntry={entriesGroupByWorldName[worldName]?.find((e) => e.uid === entry.uid)}
                         sessionRegexIds={session.regexIds}
                         onAdd={handleAddSingleEntry}
                         onRemove={handleRemoveEntry}

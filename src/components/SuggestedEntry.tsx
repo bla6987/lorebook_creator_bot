@@ -13,13 +13,33 @@ import { ExtendedWIEntry } from '../types.js';
 import { getActivationMode, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
 
 const converter = new showdown.Converter();
+const optionalEntryFields = ['constant', 'vectorized', 'order', 'position', 'depth', 'role'] as const;
+
+const getChangedFields = (entry: ExtendedWIEntry, existingEntry?: ExtendedWIEntry) => {
+  if (!existingEntry) return [];
+
+  const changes: string[] = [];
+  if ((entry.comment ?? '') !== (existingEntry.comment ?? '')) changes.push('title');
+  if ((entry.content ?? '') !== (existingEntry.content ?? '')) changes.push('content');
+  if ((entry.key ?? []).slice().sort().join('\n') !== (existingEntry.key ?? []).slice().sort().join('\n')) {
+    changes.push('keys');
+  }
+  if (
+    optionalEntryFields.some(
+      (field) => Object.prototype.hasOwnProperty.call(entry, field) && entry[field] !== existingEntry[field],
+    )
+  ) {
+    changes.push('settings');
+  }
+
+  return changes;
+};
 
 export interface SuggestedEntryProps {
   displayIndex?: number;
   initialWorldName: string;
   entry: ExtendedWIEntry;
   allWorldNames: string[];
-  existingEntry?: ExtendedWIEntry;
   sessionRegexIds: Record<string, Partial<RegexScriptData>>;
   entriesGroupByWorldName: Record<string, ExtendedWIEntry[]>;
   sessionForContext: Session;
@@ -45,7 +65,6 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
   initialWorldName,
   entry,
   allWorldNames,
-  existingEntry,
   sessionRegexIds,
   onAdd,
   onRemove,
@@ -69,10 +88,15 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
 
   const editPopupRef = useRef<EditEntryPopupRef>(null);
 
-  const isUpdate = useMemo(
-    () => !!entriesGroupByWorldName[selectedWorld]?.find((e) => e.uid === entry.uid && e.comment === entry.comment),
-    [selectedWorld, entry.uid, entry.comment, entriesGroupByWorldName],
+  const targetExistingEntry = useMemo(
+    () => entriesGroupByWorldName[selectedWorld]?.find((e) => e.uid === entry.uid),
+    [selectedWorld, entry.uid, entriesGroupByWorldName],
   );
+  const isUpdate = !!targetExistingEntry;
+  const changedFields = useMemo(() => getChangedFields(entry, targetExistingEntry), [entry, targetExistingEntry]);
+  const statusLabel = isUpdate ? 'Modifies existing' : 'New entry';
+  const applyButtonLabel = isUpdate ? 'Apply Update' : 'Add New';
+  const renamedEntry = isUpdate && (targetExistingEntry?.comment ?? '') !== (entry.comment ?? '');
 
   const isActing = isContinuing || isRevising;
   const metadataChips = useMemo(() => {
@@ -116,7 +140,23 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
           <div className="entry-title-block">
             <div className="entry-title-row">
               <h4 className="comment">{entry.comment}</h4>
-              <span className={`entry-state ${isUpdate ? 'update' : 'new'}`}>{isUpdate ? 'Update' : 'New'}</span>
+              <span className={`entry-state ${isUpdate ? 'update' : 'new'}`}>{statusLabel}</span>
+            </div>
+            <div className="entry-change-summary">
+              {isUpdate ? (
+                <>
+                  <span>Updates UID {entry.uid}</span>
+                  {renamedEntry && (
+                    <span>
+                      Renames "{targetExistingEntry?.comment || 'Untitled'}" to "{entry.comment || 'Untitled'}"
+                    </span>
+                  )}
+                  {changedFields.length > 0 && <span>Changes: {changedFields.join(', ')}</span>}
+                  {changedFields.length === 0 && <span>No detected changes from the current entry</span>}
+                </>
+              ) : (
+                <span>Creates a separate entry with a new UID when applied</span>
+              )}
             </div>
             <div className="key">
               {(entry.key ?? []).map((key, index) => (
@@ -151,7 +191,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
           </label>
           <div className="menu">
             <STButton onClick={handleAddClick} disabled={isAdding || isActing} className="menu_button interactable add">
-              <i className="fa-solid fa-box-archive"></i> {isUpdate ? 'Update' : 'Add'}
+              <i className="fa-solid fa-box-archive"></i> {applyButtonLabel}
             </STButton>
             <STButton
               onClick={() => setIsReviseSessionManagerOpen(true)}
@@ -180,7 +220,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
             <STButton onClick={() => setIsEditing(true)} disabled={isActing} className="menu_button interactable edit">
               <i className="fa-solid fa-pen-to-square"></i> Edit
             </STButton>
-            {isUpdate && (
+            {isUpdate && targetExistingEntry && (
               <STButton
                 onClick={() => setIsComparing(true)}
                 disabled={isActing}
@@ -231,10 +271,10 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
         />
       )}
 
-      {isComparing && existingEntry && (
+      {isComparing && targetExistingEntry && (
         <Popup
           type={POPUP_TYPE.DISPLAY}
-          content={<CompareEntryPopup originalEntry={existingEntry} newEntry={entry} />}
+          content={<CompareEntryPopup originalEntry={targetExistingEntry} newEntry={entry} />}
           onComplete={() => setIsComparing(false)}
         />
       )}

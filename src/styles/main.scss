@@ -1358,9 +1358,29 @@ dialog:has(.select-entries-popup) {
         overflow-wrap: anywhere;
     }
 
+    .entry-change-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+        color: var(--wirc-muted);
+        font-size: 0.78rem;
+        line-height: 1.35;
+
+        span {
+            min-width: 0;
+            max-width: 100%;
+            padding: 2px 7px;
+            border: 1px solid rgba(159, 179, 199, 0.14);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.03);
+            overflow-wrap: anywhere;
+        }
+    }
+
     .entry-state {
         padding: 2px 7px;
-        border-radius: 999px;
+        border-radius: 6px;
         color: #e9ddff;
         background: rgba(98, 59, 160, 0.45);
         border: 1px solid rgba(144, 101, 217, 0.38);
@@ -1372,6 +1392,12 @@ dialog:has(.select-entries-popup) {
             color: #d8ecff;
             background: rgba(40, 119, 201, 0.32);
             border-color: rgba(80, 147, 218, 0.44);
+        }
+
+        &.new {
+            color: #ddf8e5;
+            background: rgba(48, 127, 63, 0.34);
+            border-color: rgba(77, 183, 98, 0.42);
         }
     }
 
