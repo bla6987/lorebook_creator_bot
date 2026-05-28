@@ -103,6 +103,9 @@ const hasEntryChanges = (entry: ExtendedWIEntry, existingEntry: ExtendedWIEntry)
   return contentChanged || commentChanged || keysChanged || optionalChanged;
 };
 
+const getSuggestionTargetKey = (worldName: string, entry: ExtendedWIEntry) =>
+  `${worldName}::${entry.uid}::${entry.comment ?? ''}`;
+
 export const MainPopup: FC = () => {
   const forceUpdate = useForceUpdate();
   const settings = settingsManager.getSettings();
@@ -125,6 +128,7 @@ export const MainPopup: FC = () => {
   const [suggestionSearch, setSuggestionSearch] = useState('');
   const [suggestionTargetFilter, setSuggestionTargetFilter] = useState('all');
   const [suggestionSort, setSuggestionSort] = useState<'newest' | 'title' | 'target'>('newest');
+  const [suggestionTargetWorlds, setSuggestionTargetWorlds] = useState<Record<string, string>>({});
   const [previewMessages, setPreviewMessages] = useState<Message[]>([]);
   const [previewError, setPreviewError] = useState('');
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -143,6 +147,7 @@ export const MainPopup: FC = () => {
     setEntriesGroupByWorldName({});
     setAllWorldNames([]);
     setGroupMembers([]);
+    setSuggestionTargetWorlds({});
 
     const avatar = getAvatar();
     const key = `worldInfoRecommend_${avatarKey}`;
@@ -530,6 +535,13 @@ export const MainPopup: FC = () => {
           }
           return { ...prev, suggestedEntries: newSuggested };
         });
+        setSuggestionTargetWorlds((prev) => {
+          const key = getSuggestionTargetKey(worldName, entry);
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
       } catch (error: any) {
         console.error(error);
         st_echo('error', `Failed to add entry: ${error.message}`);
@@ -558,7 +570,10 @@ export const MainPopup: FC = () => {
 
     Object.entries(session.suggestedEntries).forEach(([worldName, entries]) => {
       entries.forEach((entry) => {
-        const targetWorldName = allWorldNames.includes(worldName) ? worldName : (allWorldNames[0] ?? '');
+        const selectedTargetWorld = suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName;
+        const targetWorldName = allWorldNames.includes(selectedTargetWorld)
+          ? selectedTargetWorld
+          : (allWorldNames[0] ?? '');
         if (targetWorldName) entriesToAdd.push({ worldName: targetWorldName, entry });
       });
     });
@@ -609,6 +624,7 @@ export const MainPopup: FC = () => {
 
     setEntriesGroupByWorldName(workingEntries);
     setSession((prev) => ({ ...prev, suggestedEntries: {} }));
+    setSuggestionTargetWorlds({});
     st_echo('success', `Processed: ${addedCount} new, ${updatedCount} updated, ${unchangedCount} unchanged.`);
     setIsGenerating(false);
   };
@@ -626,6 +642,7 @@ export const MainPopup: FC = () => {
         selectedWorldNames: getAvatar() ? [...allWorldNames] : [],
         selectedEntryUids: {},
       }));
+      setSuggestionTargetWorlds({});
       st_echo('success', 'Reset successful');
     }
   };
@@ -645,6 +662,13 @@ export const MainPopup: FC = () => {
       newSession.suggestedEntries = newSuggested;
       return newSession;
     });
+    setSuggestionTargetWorlds((prev) => {
+      const key = getSuggestionTargetKey(worldName, entry);
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   };
 
   const handleUpdateEntry = (
@@ -653,6 +677,14 @@ export const MainPopup: FC = () => {
     updatedEntry: ExtendedWIEntry,
     updatedRegexIds?: Record<string, Partial<RegexScriptData>>,
   ) => {
+    setSuggestionTargetWorlds((prev) => {
+      const previousKey = getSuggestionTargetKey(worldName, originalEntry);
+      const nextKey = getSuggestionTargetKey(worldName, updatedEntry);
+      if (previousKey === nextKey || !(previousKey in prev)) return prev;
+      const next = { ...prev, [nextKey]: prev[previousKey] };
+      delete next[previousKey];
+      return next;
+    });
     setSession((prev) => {
       const newSuggested = { ...prev.suggestedEntries };
       if (newSuggested[worldName]) {
@@ -1426,7 +1458,16 @@ export const MainPopup: FC = () => {
                         initialWorldName={worldName}
                         entry={entry}
                         allWorldNames={allWorldNames}
+                        selectedTargetWorld={
+                          suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName
+                        }
                         sessionRegexIds={session.regexIds}
+                        onTargetWorldChange={(targetWorldName) =>
+                          setSuggestionTargetWorlds((prev) => ({
+                            ...prev,
+                            [getSuggestionTargetKey(worldName, entry)]: targetWorldName,
+                          }))
+                        }
                         onAdd={handleAddSingleEntry}
                         onRemove={handleRemoveEntry}
                         onContinue={handleGeneration}

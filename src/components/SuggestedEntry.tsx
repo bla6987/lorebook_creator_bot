@@ -40,10 +40,12 @@ export interface SuggestedEntryProps {
   initialWorldName: string;
   entry: ExtendedWIEntry;
   allWorldNames: string[];
+  selectedTargetWorld: string;
   sessionRegexIds: Record<string, Partial<RegexScriptData>>;
   entriesGroupByWorldName: Record<string, ExtendedWIEntry[]>;
   sessionForContext: Session;
   contextToSend: ExtensionSettings['contextToSend'];
+  onTargetWorldChange: (worldName: string) => void;
   onAdd: (entry: ExtendedWIEntry, initialWorldName: string, selectedTargetWorld: string) => void;
   onRemove: (entry: ExtendedWIEntry, initialWorldName: string, isBlacklist: boolean) => void;
   onContinue: (continueFrom: {
@@ -65,19 +67,18 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
   initialWorldName,
   entry,
   allWorldNames,
+  selectedTargetWorld,
   sessionRegexIds,
   onAdd,
   onRemove,
   onContinue,
   onUpdate,
+  onTargetWorldChange,
   entriesGroupByWorldName,
   sessionForContext,
   contextToSend,
 }) => {
-  const [selectedWorld, setSelectedWorld] = useState(() => {
-    const initial = allWorldNames.find((w) => w === initialWorldName);
-    return initial ?? allWorldNames[0] ?? '';
-  });
+  const selectedWorld = allWorldNames.includes(selectedTargetWorld) ? selectedTargetWorld : (allWorldNames[0] ?? '');
   const [isAdding, setIsAdding] = useState(false);
   const [isContinuing, setIsContinuing] = useState(false);
   const [isRevising, setIsRevising] = useState(false);
@@ -94,8 +95,9 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
   );
   const isUpdate = !!targetExistingEntry;
   const changedFields = useMemo(() => getChangedFields(entry, targetExistingEntry), [entry, targetExistingEntry]);
-  const statusLabel = isUpdate ? 'Modifies existing' : 'New entry';
-  const applyButtonLabel = isUpdate ? 'Apply Update' : 'Add New';
+  const isUnchangedUpdate = isUpdate && changedFields.length === 0;
+  const statusLabel = isUnchangedUpdate ? 'Matches existing' : isUpdate ? 'Modifies existing' : 'New entry';
+  const applyButtonLabel = isUnchangedUpdate ? 'No Changes' : isUpdate ? 'Apply Update' : 'Add New';
   const renamedEntry = isUpdate && (targetExistingEntry?.comment ?? '') !== (entry.comment ?? '');
 
   const isActing = isContinuing || isRevising;
@@ -152,7 +154,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
                     </span>
                   )}
                   {changedFields.length > 0 && <span>Changes: {changedFields.join(', ')}</span>}
-                  {changedFields.length === 0 && <span>No detected changes from the current entry</span>}
+                  {changedFields.length === 0 && <span>No changes detected; edit or rewrite before applying</span>}
                 </>
               ) : (
                 <span>Creates a separate entry with a new UID when applied</span>
@@ -180,7 +182,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
             <select
               className="world-select text_pole"
               value={selectedWorld}
-              onChange={(e) => setSelectedWorld(e.target.value)}
+              onChange={(e) => onTargetWorldChange(e.target.value)}
             >
               {allWorldNames.map((name) => (
                 <option key={name} value={name}>
@@ -190,7 +192,12 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
             </select>
           </label>
           <div className="menu">
-            <STButton onClick={handleAddClick} disabled={isAdding || isActing} className="menu_button interactable add">
+            <STButton
+              onClick={handleAddClick}
+              disabled={isAdding || isActing || isUnchangedUpdate}
+              className="menu_button interactable add"
+              title={isUnchangedUpdate ? 'This suggestion currently matches the target entry.' : undefined}
+            >
               <i className="fa-solid fa-box-archive"></i> {applyButtonLabel}
             </STButton>
             <STButton
