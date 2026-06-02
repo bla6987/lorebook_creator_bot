@@ -13,11 +13,13 @@ import { BuildPromptOptions, Message, getWorldInfos } from 'sillytavern-utils-li
 import {
   groups,
   selected_group,
+  st_createNewWorldInfo,
   st_createWorldInfoEntry,
   st_echo,
   st_getCharaFilename,
   this_chid,
   world_names,
+  WI_METADATA_KEY,
 } from 'sillytavern-utils-lib/config';
 import { buildRecommendationMessages, runWorldInfoRecommendation, Session } from '../generate.js';
 import { ExtensionSettings, settingsManager } from '../settings.js';
@@ -326,6 +328,73 @@ export const MainPopup: FC = () => {
     };
   }, [settings, session]);
 
+  // Reflect a newly available lorebook in the local UI state without a full reload.
+  const registerWorldLocally = useCallback((worldName: string) => {
+    setAllWorldNames((prev) => (prev.includes(worldName) ? prev : [...prev, worldName]));
+    setEntriesGroupByWorldName((prev) => (prev[worldName] ? prev : { ...prev, [worldName]: [] }));
+    setSession((prev) =>
+      prev.selectedWorldNames.includes(worldName)
+        ? prev
+        : { ...prev, selectedWorldNames: [...prev.selectedWorldNames, worldName] },
+    );
+  }, []);
+
+  // Returns the lorebook bound to the current chat, creating one if it doesn't exist yet.
+  const resolveOrCreateChatLorebook = useCallback(async (): Promise<string | null> => {
+    // These members exist at runtime but are absent from the lib's context typings.
+    const context = SillyTavern.getContext() as typeof globalContext & {
+      getCurrentChatId?: () => string | null | undefined;
+      updateChatMetadata: (values: Record<string, unknown>, reset: boolean) => void;
+      saveMetadata: () => Promise<void>;
+    };
+    const chatId = context.getCurrentChatId?.();
+    if (!chatId) {
+      st_echo('warning', 'Open a chat first so a chat-specific lorebook can be created.');
+      return null;
+    }
+
+    // Reuse the lorebook already bound to this chat when it still exists.
+    const boundName = context.chatMetadata?.[WI_METADATA_KEY];
+    if (boundName && world_names.includes(boundName)) {
+      registerWorldLocally(boundName);
+      return boundName;
+    }
+
+    // Otherwise create a fresh chat-specific lorebook and bind it to the chat.
+    const baseName = `Chat Book ${chatId}`
+      .replace(/[^a-z0-9 -]/gi, '_')
+      .replace(/_{2,}/g, '_')
+      .substring(0, 64);
+    let worldName = baseName;
+    for (let counter = 1; world_names.includes(worldName); counter++) {
+      worldName = `${baseName} #${counter}`;
+    }
+
+    const created = await st_createNewWorldInfo(worldName, { interactive: false });
+    if (!created || !world_names.includes(worldName)) {
+      st_echo('error', 'Failed to create a chat-specific lorebook.');
+      return null;
+    }
+
+    context.updateChatMetadata({ [WI_METADATA_KEY]: worldName }, false);
+    await context.saveMetadata();
+    registerWorldLocally(worldName);
+    st_echo('success', `Created chat lorebook "${worldName}".`);
+    return worldName;
+  }, [registerWorldLocally]);
+
+  // Resolves the lorebook an entry should be added to, falling back to the chat
+  // lorebook (created on demand) when no valid target is selected.
+  const ensureTargetWorldName = useCallback(
+    async (requestedWorldName: string): Promise<string | null> => {
+      if (requestedWorldName && allWorldNames.includes(requestedWorldName)) {
+        return requestedWorldName;
+      }
+      return resolveOrCreateChatLorebook();
+    },
+    [allWorldNames, resolveOrCreateChatLorebook],
+  );
+
   const addEntry = useCallback(
     async (
       entry: ExtendedWIEntry,
@@ -519,7 +588,9 @@ export const MainPopup: FC = () => {
   const handleAddSingleEntry = useCallback(
     async (entry: ExtendedWIEntry, worldName: string, selectedTargetWorld: string) => {
       try {
-        const status = await addEntry(entry, selectedTargetWorld);
+        const targetWorld = await ensureTargetWorldName(selectedTargetWorld);
+        if (!targetWorld) return;
+        const status = await addEntry(entry, targetWorld);
         if (status === 'unchanged') {
           st_echo('info', `No changes detected for "${entry.comment}". Entry was not updated.`);
         } else {
@@ -547,7 +618,7 @@ export const MainPopup: FC = () => {
         st_echo('error', `Failed to add entry: ${error.message}`);
       }
     },
-    [addEntry],
+    [addEntry, ensureTargetWorldName],
   );
 
   const handleAddAll = async () => {
@@ -568,12 +639,29 @@ export const MainPopup: FC = () => {
     const entriesToAdd: { worldName: string; entry: ExtendedWIEntry }[] = [];
     const workingEntries = structuredClone(entriesGroupByWorldName);
 
+    // When any suggestion has no valid target lorebook, route it to the chat
+    // lorebook, creating one bound to the current chat if needed.
+    const needsFallbackWorld = Object.entries(session.suggestedEntries).some(([worldName, entries]) =>
+      entries.some((entry) => {
+        const selectedTargetWorld = suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName;
+        return !allWorldNames.includes(selectedTargetWorld);
+      }),
+    );
+    let fallbackWorldName = '';
+    if (needsFallbackWorld) {
+      const chatWorldName = await resolveOrCreateChatLorebook();
+      if (!chatWorldName) {
+        setIsGenerating(false);
+        return;
+      }
+      fallbackWorldName = chatWorldName;
+      if (!workingEntries[fallbackWorldName]) workingEntries[fallbackWorldName] = [];
+    }
+
     Object.entries(session.suggestedEntries).forEach(([worldName, entries]) => {
       entries.forEach((entry) => {
         const selectedTargetWorld = suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName;
-        const targetWorldName = allWorldNames.includes(selectedTargetWorld)
-          ? selectedTargetWorld
-          : (allWorldNames[0] ?? '');
+        const targetWorldName = allWorldNames.includes(selectedTargetWorld) ? selectedTargetWorld : fallbackWorldName;
         if (targetWorldName) entriesToAdd.push({ worldName: targetWorldName, entry });
       });
     });
