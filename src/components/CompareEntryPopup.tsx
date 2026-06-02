@@ -53,7 +53,11 @@ export const CompareEntryPopup: FC<CompareEntryPopupProps> = ({ originalEntry, n
       { label: 'Title', before: originalEntry.comment, after: newEntry.comment },
       { label: 'Triggers', before: originalEntry.key ?? [], after: newEntry.key ?? [] },
       { label: 'Activation', before: getActivationMode(originalEntry), after: getActivationMode(newEntry) },
-      { label: 'Position', before: getPositionLabel(originalEntry.position), after: getPositionLabel(newEntry.position) },
+      {
+        label: 'Position',
+        before: getPositionLabel(originalEntry.position),
+        after: getPositionLabel(newEntry.position),
+      },
       { label: 'Order', before: originalEntry.order, after: newEntry.order },
       { label: 'Depth', before: originalEntry.depth, after: newEntry.depth },
       { label: 'Role', before: getRoleLabel(originalEntry.role), after: getRoleLabel(newEntry.role) },
@@ -85,19 +89,13 @@ export const CompareEntryPopup: FC<CompareEntryPopupProps> = ({ originalEntry, n
         {/* Original Content Column */}
         <div className="content-diff-column">
           <h4>Original Content</h4>
-          <div
-            className="content-diff-box"
-            dangerouslySetInnerHTML={{ __html: diffResult.originalHtml }}
-          />
+          <div className="content-diff-box" dangerouslySetInnerHTML={{ __html: diffResult.originalHtml }} />
         </div>
 
         {/* New Content Column */}
         <div className="content-diff-column">
           <h4>New Content (Suggestion)</h4>
-          <div
-            className="content-diff-box"
-            dangerouslySetInnerHTML={{ __html: diffResult.newHtml }}
-          />
+          <div className="content-diff-box" dangerouslySetInnerHTML={{ __html: diffResult.newHtml }} />
         </div>
       </div>
     </div>

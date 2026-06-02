@@ -1,10 +1,5 @@
 import { FC, useState, useEffect, useRef, useCallback } from 'react';
-import {
-  STButton,
-  STTextarea,
-  Popup,
-  STInput,
-} from 'sillytavern-utils-lib/components/react';
+import { STButton, STTextarea, Popup, STInput } from 'sillytavern-utils-lib/components/react';
 import {
   ReviseMessage,
   ReviseSession,
@@ -27,6 +22,7 @@ import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { GlobalStatePopup } from './GlobalStatePopup.js';
 import * as Handlebars from 'handlebars';
 import { getRuntimeConnectionProfile } from '../api-settings.js';
+import { toWorldInfoSaveFormat } from './lorebookEditorUtils.js';
 
 const globalContext = SillyTavern.getContext();
 
@@ -77,7 +73,7 @@ const calculateNewGlobalState = (
       if (!newState[worldName]) {
         newState[worldName] = [];
       }
-      const stFormat = { entries: Object.fromEntries(newState[worldName].map((e) => [e.uid, e])) };
+      const stFormat = toWorldInfoSaveFormat(newState[worldName]);
       const newEntry = st_createWorldInfoEntry(worldName, stFormat);
       if (newEntry) {
         newEntry.comment = name;
@@ -224,7 +220,8 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           } else {
             const contentChanged = (newEntry.content || '') !== (oldEntry.content || '');
             const commentChanged = (newEntry.comment || '') !== (oldEntry.comment || '');
-            const keysChanged = (newEntry.key || []).sort().join(',') !== (oldEntry.key || []).sort().join(',');
+            const keysChanged =
+              (newEntry.key || []).slice().sort().join(',') !== (oldEntry.key || []).slice().sort().join(',');
             if (contentChanged || commentChanged || keysChanged) {
               isChanged = true; // Modified
             }
@@ -484,13 +481,16 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
     );
   }, [isLoading, messages, sendRequest]);
 
+  // The latest snapshot in the conversation (or the initial state if none yet).
+  // Computed once and reused by apply / manual-edit / the render below.
+  const currentState =
+    messages
+      .slice()
+      .reverse()
+      .find((m) => m.stateSnapshot)?.stateSnapshot ?? initialState;
+
   const handleApply = () => {
-    const lastState =
-      messages
-        .slice()
-        .reverse()
-        .find((m) => m.stateSnapshot)?.stateSnapshot ?? initialState;
-    onApply(lastState);
+    onApply(currentState);
     onBack();
   };
 
@@ -570,12 +570,6 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
   };
 
   const handleSaveStateEdit = (newState: ReviseState) => {
-    const lastState =
-      messages
-        .slice()
-        .reverse()
-        .find((m) => m.stateSnapshot)?.stateSnapshot ?? initialState;
-
     const userEditMessage: ReviseMessage = {
       id: `msg-${Date.now()}-user-edit`,
       role: 'user',
@@ -584,18 +578,12 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
     };
 
     let finalMessages = [...messages, userEditMessage];
-    finalMessages = createAndAddStateUpdateMessage(finalMessages, newState, lastState);
+    finalMessages = createAndAddStateUpdateMessage(finalMessages, newState, currentState);
 
     setMessages(finalMessages);
     onSessionUpdate({ ...session, messages: finalMessages });
     setIsEditingState(false);
   };
-
-  const currentState =
-    messages
-      .slice()
-      .reverse()
-      .find((m) => m.stateSnapshot)?.stateSnapshot ?? initialState;
 
   const visibleMessages = messages.filter((m) => !m.isStateUpdate);
   const initialMsgs = visibleMessages.filter((m) => m.isInitial);
@@ -615,7 +603,10 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             />
             Readonly Mode
           </label>
-          <div className="revise-active-profile" title="Revise requests use the connection profile selected in the main plugin popup.">
+          <div
+            className="revise-active-profile"
+            title="Revise requests use the connection profile selected in the main plugin popup."
+          >
             {activePluginProfile?.name ?? 'No plugin profile selected'}
           </div>
           <select

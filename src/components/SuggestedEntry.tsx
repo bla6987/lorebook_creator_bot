@@ -10,30 +10,9 @@ import { Session } from '../generate.js';
 import { ExtensionSettings } from '../settings.js';
 import { ReviseState } from '../revise-types.js';
 import { ExtendedWIEntry } from '../types.js';
-import { getActivationMode, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
+import { getActivationMode, getChangedEntryFields, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
 
 const converter = new showdown.Converter();
-const optionalEntryFields = ['constant', 'vectorized', 'order', 'position', 'depth', 'role'] as const;
-
-const getChangedFields = (entry: ExtendedWIEntry, existingEntry?: ExtendedWIEntry) => {
-  if (!existingEntry) return [];
-
-  const changes: string[] = [];
-  if ((entry.comment ?? '') !== (existingEntry.comment ?? '')) changes.push('title');
-  if ((entry.content ?? '') !== (existingEntry.content ?? '')) changes.push('content');
-  if ((entry.key ?? []).slice().sort().join('\n') !== (existingEntry.key ?? []).slice().sort().join('\n')) {
-    changes.push('keys');
-  }
-  if (
-    optionalEntryFields.some(
-      (field) => Object.prototype.hasOwnProperty.call(entry, field) && entry[field] !== existingEntry[field],
-    )
-  ) {
-    changes.push('settings');
-  }
-
-  return changes;
-};
 
 export interface SuggestedEntryProps {
   displayIndex?: number;
@@ -94,7 +73,10 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
     [selectedWorld, entry.uid, entriesGroupByWorldName],
   );
   const isUpdate = !!targetExistingEntry;
-  const changedFields = useMemo(() => getChangedFields(entry, targetExistingEntry), [entry, targetExistingEntry]);
+  const changedFields = useMemo(
+    () => (targetExistingEntry ? getChangedEntryFields(entry, targetExistingEntry) : []),
+    [entry, targetExistingEntry],
+  );
   const isUnchangedUpdate = isUpdate && changedFields.length === 0;
   const statusLabel = isUnchangedUpdate ? 'Matches existing' : isUpdate ? 'Modifies existing' : 'New entry';
   const applyButtonLabel = isUnchangedUpdate ? 'No Changes' : isUpdate ? 'Apply Update' : 'Add New';

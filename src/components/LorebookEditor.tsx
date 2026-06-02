@@ -16,7 +16,6 @@ import {
   SortSelection,
   UNCATEGORIZED_FILTER,
   buildFirstWordGrouping,
-  cloneEntriesByWorld,
   filterEntriesByFirstWord,
   getActivationMode,
   getActivationUpdates,
@@ -31,6 +30,7 @@ import {
   sanitizeCategoryName,
   sanitizeCategoryStorage,
   sortEntries,
+  toWorldInfoSaveFormat,
 } from './lorebookEditorUtils.js';
 
 const globalContext = SillyTavern.getContext();
@@ -118,7 +118,12 @@ const EntryEditor: FC<EntryEditorProps> = ({
   const selectedCategory = categories.find((category) => category.id === categoryId);
   const activationMode = getActivationMode(entry);
   const isCompact = viewMode === 'compact';
-  const cardClass = ['lorebook-entry-card', isCompact ? 'compact' : 'card-view', isDirty ? 'dirty' : '', isSelected ? 'selected' : '']
+  const cardClass = [
+    'lorebook-entry-card',
+    isCompact ? 'compact' : 'card-view',
+    isDirty ? 'dirty' : '',
+    isSelected ? 'selected' : '',
+  ]
     .filter(Boolean)
     .join(' ');
   const roleValue = entry.role ?? 0;
@@ -140,7 +145,11 @@ const EntryEditor: FC<EntryEditorProps> = ({
     <article className={cardClass} data-uid={entry.uid} style={categoryStyle(selectedCategory)}>
       <div className="entry-card-topline">
         <label className="entry-card-select">
-          <input type="checkbox" checked={isSelected} onChange={(event) => onToggleSelected(worldName, entry.uid, event)} />
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={(event) => onToggleSelected(worldName, entry.uid, event)}
+          />
         </label>
         <span className="entry-card-category-swatch" title={selectedCategory?.name ?? 'Uncategorized'}>
           {selectedCategory?.icon ?? ''}
@@ -195,12 +204,18 @@ const EntryEditor: FC<EntryEditorProps> = ({
                 type="number"
                 min="0"
                 value={entry.depth ?? ''}
-                onChange={(event) => onChange(worldName, entry.uid, { depth: parseNumberInput(event.target.value) ?? null })}
+                onChange={(event) =>
+                  onChange(worldName, entry.uid, { depth: parseNumberInput(event.target.value) ?? null })
+                }
               />
             </label>
             <label>
               Role
-              <select className="text_pole" value={roleValue} onChange={(event) => onChange(worldName, entry.uid, { role: Number(event.target.value) })}>
+              <select
+                className="text_pole"
+                value={roleValue}
+                onChange={(event) => onChange(worldName, entry.uid, { role: Number(event.target.value) })}
+              >
                 {ROLE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -212,7 +227,11 @@ const EntryEditor: FC<EntryEditorProps> = ({
         )}
         <label>
           Category
-          <select className="text_pole" value={categoryId} onChange={(event) => onCategoryChange(worldName, entry.uid, event.target.value)}>
+          <select
+            className="text_pole"
+            value={categoryId}
+            onChange={(event) => onCategoryChange(worldName, entry.uid, event.target.value)}
+          >
             <option value="">Uncategorized</option>
             {categories.map((category) => (
               <option key={category.id} value={category.id}>
@@ -280,20 +299,19 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   sessionForContext,
   contextToSend,
 }) => {
-  const normalizedEntries = useMemo(
-    () => normalizeEntriesByWorld(entriesGroupByWorldName),
-    [entriesGroupByWorldName],
-  );
+  const normalizedEntries = useMemo(() => normalizeEntriesByWorld(entriesGroupByWorldName), [entriesGroupByWorldName]);
   const worldNames = useMemo(() => Object.keys(normalizedEntries), [normalizedEntries]);
   const [draftEntries, setDraftEntries] = useState<Record<string, ExtendedWIEntry[]>>(() =>
-    cloneEntriesByWorld(normalizedEntries),
+    structuredClone(normalizedEntries),
   );
   const [selectedWorldName, setSelectedWorldName] = useState(() => {
     const stored = typeof localStorage === 'undefined' ? '' : localStorage.getItem(SELECTED_WORLD_STORAGE_KEY) || '';
     return stored && normalizedEntries[stored] ? stored : (worldNames[0] ?? '');
   });
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'compact' ? 'compact' : 'card',
+    typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'compact'
+      ? 'compact'
+      : 'card',
   );
   const [sortSelection, setSortSelection] = useState<SortSelection>(() => {
     const stored = typeof localStorage === 'undefined' ? '' : localStorage.getItem(SORT_STORAGE_KEY) || '';
@@ -337,7 +355,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const lastSelectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setDraftEntries(cloneEntriesByWorld(normalizedEntries));
+    setDraftEntries(structuredClone(normalizedEntries));
     setDirtyIds(new Set());
     setDeletedIds(new Set());
     setSelectedIds(new Set());
@@ -387,7 +405,8 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     const needle = searchText.trim().toLocaleLowerCase();
     if (!needle) return activeEntries;
     return activeEntries.filter((entry) => {
-      const haystack = `${entry.comment ?? ''}\n${(entry.key ?? []).join(',')}\n${entry.content ?? ''}`.toLocaleLowerCase();
+      const haystack =
+        `${entry.comment ?? ''}\n${(entry.key ?? []).join(',')}\n${entry.content ?? ''}`.toLocaleLowerCase();
       return haystack.includes(needle);
     });
   }, [activeEntries, searchText]);
@@ -498,7 +517,9 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     });
   };
 
-  const updateCategoryStorageForWorld = (updater: (categories: LorebookCategory[], assignments: Record<string, string>) => LorebookCategoryStorage[string]) => {
+  const updateCategoryStorageForWorld = (
+    updater: (categories: LorebookCategory[], assignments: Record<string, string>) => LorebookCategoryStorage[string],
+  ) => {
     const previousState = categoryStorage[selectedWorldName] ?? { categories: [], entryAssignments: {} };
     const nextState = updater([...previousState.categories], { ...previousState.entryAssignments });
     persistCategoryStorage({ ...categoryStorage, [selectedWorldName]: nextState });
@@ -549,7 +570,10 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const handleDeleteCategory = async (categoryId: string) => {
     const category = activeCategories.find((item) => item.id === categoryId);
     if (!category) return;
-    const confirmed = await globalContext.Popup.show.confirm('Delete Category', `Remove category "${category.name}"? Entries will become uncategorized.`);
+    const confirmed = await globalContext.Popup.show.confirm(
+      'Delete Category',
+      `Remove category "${category.name}"? Entries will become uncategorized.`,
+    );
     if (!confirmed) return;
 
     updateCategoryStorageForWorld((categories, entryAssignments) => {
@@ -594,7 +618,10 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const handleDeleteEntry = async (worldName: string, uid: number) => {
     const entry = draftEntries[worldName]?.find((item) => item.uid === uid);
     const label = entry?.comment?.trim() || `UID ${uid}`;
-    const confirmed = await globalContext.Popup.show.confirm('Draft Delete Entry', `Hide "${label}" from the editor until Save All is clicked?`);
+    const confirmed = await globalContext.Popup.show.confirm(
+      'Draft Delete Entry',
+      `Hide "${label}" from the editor until Save All is clicked?`,
+    );
     if (!confirmed) return;
     const id = getEntryIdentity(worldName, uid);
     setDeletedIds((previous) => new Set(previous).add(id));
@@ -610,7 +637,10 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
       st_echo('warning', 'Select entries to delete first.');
       return;
     }
-    const confirmed = await globalContext.Popup.show.confirm('Draft Delete Selected', `Hide ${selectedIds.size} selected entries until Save All is clicked?`);
+    const confirmed = await globalContext.Popup.show.confirm(
+      'Draft Delete Selected',
+      `Hide ${selectedIds.size} selected entries until Save All is clicked?`,
+    );
     if (!confirmed) return;
     setDeletedIds((previous) => new Set([...Array.from(previous), ...Array.from(selectedIds)]));
     setSelectedIds(new Set());
@@ -618,9 +648,12 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
 
   const handleRevertAll = async () => {
     if (!hasUnsavedChanges) return;
-    const confirmed = await globalContext.Popup.show.confirm('Revert Editor Changes', 'Discard unsaved editor changes and draft deletions?');
+    const confirmed = await globalContext.Popup.show.confirm(
+      'Revert Editor Changes',
+      'Discard unsaved editor changes and draft deletions?',
+    );
     if (!confirmed) return;
-    setDraftEntries(cloneEntriesByWorld(normalizedEntries));
+    setDraftEntries(structuredClone(normalizedEntries));
     setDirtyIds(new Set());
     setDeletedIds(new Set());
     setSelectedIds(new Set());
@@ -635,7 +668,9 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     });
 
     for (const worldName of affectedWorlds) {
-      const entries = (draftEntries[worldName] ?? []).filter((entry) => !deletedIds.has(getEntryIdentity(worldName, entry.uid)));
+      const entries = (draftEntries[worldName] ?? []).filter(
+        (entry) => !deletedIds.has(getEntryIdentity(worldName, entry.uid)),
+      );
       await onReplaceWorldEntries(worldName, entries);
     }
 
@@ -700,7 +735,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
       return;
     }
     const entries = activeEntries;
-    const payload = { entries: Object.fromEntries(entries.map((entry) => [entry.uid, entry])) };
+    const payload = toWorldInfoSaveFormat(entries);
     const fileName = `${sanitizeFileName(selectedWorldName) || 'lorebook'}_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -751,7 +786,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
         <div className="toolbar-row">
           <label>
             Lorebook
-            <select className="text_pole" value={selectedWorldName} onChange={(event) => setSelectedWorldName(event.target.value)}>
+            <select
+              className="text_pole"
+              value={selectedWorldName}
+              onChange={(event) => setSelectedWorldName(event.target.value)}
+            >
               {worldNames.map((worldName) => (
                 <option key={worldName} value={worldName}>
                   {worldName}
@@ -761,11 +800,20 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           </label>
           <label>
             Search
-            <input className="text_pole" value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Name, trigger, content" />
+            <input
+              className="text_pole"
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              placeholder="Name, trigger, content"
+            />
           </label>
           <label>
             Sort
-            <select className="text_pole" value={sortSelection} onChange={(event) => setSortSelection(event.target.value as SortSelection)}>
+            <select
+              className="text_pole"
+              value={sortSelection}
+              onChange={(event) => setSortSelection(event.target.value as SortSelection)}
+            >
               <option value="original">Original order</option>
               <option value="name-asc">Name A-Z</option>
               <option value="name-desc">Name Z-A</option>
@@ -779,7 +827,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           </label>
           <label>
             First word
-            <select className="text_pole" value={firstWordFilter} onChange={(event) => setFirstWordFilter(event.target.value)}>
+            <select
+              className="text_pole"
+              value={firstWordFilter}
+              onChange={(event) => setFirstWordFilter(event.target.value)}
+            >
               <option value={NO_FIRST_WORD_FILTER}>All</option>
               {firstWordOptions.map((option) => (
                 <option key={option.key} value={option.key}>
@@ -790,7 +842,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           </label>
           <label>
             Category
-            <select className="text_pole" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+            <select
+              className="text_pole"
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+            >
               <option value="">All</option>
               <option value={UNCATEGORIZED_FILTER}>Uncategorized</option>
               {activeCategories.map((category) => (
@@ -821,7 +877,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           <STButton className="menu_button" disabled={!hasUnsavedChanges} onClick={handleSaveAll}>
             Save All
           </STButton>
-          <STButton className="menu_button danger_button" disabled={selectedIds.size === 0} onClick={handleDeleteSelected}>
+          <STButton
+            className="menu_button danger_button"
+            disabled={selectedIds.size === 0}
+            onClick={handleDeleteSelected}
+          >
             Delete Selected
           </STButton>
         </div>
@@ -832,18 +892,47 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           <h3>Bulk Tools</h3>
           <div className="bulk-tool">
             <h4>Titles</h4>
-            <input className="text_pole" placeholder="Prefix" value={bulkPrefix} onChange={(event) => setBulkPrefix(event.target.value)} />
-            <input className="text_pole" placeholder="Replace title with" value={bulkReplace} onChange={(event) => setBulkReplace(event.target.value)} />
-            <input className="text_pole" placeholder="Suffix" value={bulkSuffix} onChange={(event) => setBulkSuffix(event.target.value)} />
-            <input className="text_pole" placeholder="Counter start" value={bulkCounterStart} onChange={(event) => setBulkCounterStart(event.target.value)} />
+            <input
+              className="text_pole"
+              placeholder="Prefix"
+              value={bulkPrefix}
+              onChange={(event) => setBulkPrefix(event.target.value)}
+            />
+            <input
+              className="text_pole"
+              placeholder="Replace title with"
+              value={bulkReplace}
+              onChange={(event) => setBulkReplace(event.target.value)}
+            />
+            <input
+              className="text_pole"
+              placeholder="Suffix"
+              value={bulkSuffix}
+              onChange={(event) => setBulkSuffix(event.target.value)}
+            />
+            <input
+              className="text_pole"
+              placeholder="Counter start"
+              value={bulkCounterStart}
+              onChange={(event) => setBulkCounterStart(event.target.value)}
+            />
             <STButton className="menu_button" disabled={selectedEntries.length === 0} onClick={handleBulkTitle}>
               Apply Title
             </STButton>
           </div>
           <div className="bulk-tool">
             <h4>Order</h4>
-            <input className="text_pole" placeholder="Start" value={bulkOrderStart} onChange={(event) => setBulkOrderStart(event.target.value)} />
-            <select className="text_pole" value={bulkOrderDirection} onChange={(event) => setBulkOrderDirection(event.target.value as 'asc' | 'desc')}>
+            <input
+              className="text_pole"
+              placeholder="Start"
+              value={bulkOrderStart}
+              onChange={(event) => setBulkOrderStart(event.target.value)}
+            />
+            <select
+              className="text_pole"
+              value={bulkOrderDirection}
+              onChange={(event) => setBulkOrderDirection(event.target.value as 'asc' | 'desc')}
+            >
               <option value="asc">Ascending</option>
               <option value="desc">Descending</option>
             </select>
@@ -853,7 +942,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           </div>
           <div className="bulk-tool">
             <h4>Position</h4>
-            <select className="text_pole" value={bulkPosition} onChange={(event) => setBulkPosition(event.target.value)}>
+            <select
+              className="text_pole"
+              value={bulkPosition}
+              onChange={(event) => setBulkPosition(event.target.value)}
+            >
               <option value="">Select position</option>
               {POSITION_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -863,7 +956,12 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
             </select>
             {bulkPosition === '4' && (
               <>
-                <input className="text_pole" placeholder="Depth" value={bulkDepth} onChange={(event) => setBulkDepth(event.target.value)} />
+                <input
+                  className="text_pole"
+                  placeholder="Depth"
+                  value={bulkDepth}
+                  onChange={(event) => setBulkDepth(event.target.value)}
+                />
                 <select className="text_pole" value={bulkRole} onChange={(event) => setBulkRole(event.target.value)}>
                   {ROLE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -880,9 +978,25 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
 
           <h3>Categories</h3>
           <div className="category-create">
-            <input className="text_pole" placeholder="Name" value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} />
-            <input className="text_pole" placeholder="Icon" value={newCategoryIcon} maxLength={4} onChange={(event) => setNewCategoryIcon(event.target.value)} />
-            <input className="text_pole" type="color" value={newCategoryColor} onChange={(event) => setNewCategoryColor(event.target.value)} />
+            <input
+              className="text_pole"
+              placeholder="Name"
+              value={newCategoryName}
+              onChange={(event) => setNewCategoryName(event.target.value)}
+            />
+            <input
+              className="text_pole"
+              placeholder="Icon"
+              value={newCategoryIcon}
+              maxLength={4}
+              onChange={(event) => setNewCategoryIcon(event.target.value)}
+            />
+            <input
+              className="text_pole"
+              type="color"
+              value={newCategoryColor}
+              onChange={(event) => setNewCategoryColor(event.target.value)}
+            />
             <STButton className="menu_button" onClick={handleCreateCategory}>
               Add
             </STButton>
@@ -892,9 +1006,23 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
             {activeCategories.map((category) => (
               <div key={category.id} className="category-item" style={categoryStyle(category)}>
                 <span className="entry-card-category-swatch">{category.icon ?? ''}</span>
-                <input className="text_pole" value={category.name} onChange={(event) => handleUpdateCategory(category.id, { name: event.target.value })} />
-                <input className="text_pole category-icon-input" value={category.icon ?? ''} maxLength={4} onChange={(event) => handleUpdateCategory(category.id, { icon: event.target.value })} />
-                <input className="text_pole category-color-input" type="color" value={category.color ?? '#6c7a89'} onChange={(event) => handleUpdateCategory(category.id, { color: event.target.value })} />
+                <input
+                  className="text_pole"
+                  value={category.name}
+                  onChange={(event) => handleUpdateCategory(category.id, { name: event.target.value })}
+                />
+                <input
+                  className="text_pole category-icon-input"
+                  value={category.icon ?? ''}
+                  maxLength={4}
+                  onChange={(event) => handleUpdateCategory(category.id, { icon: event.target.value })}
+                />
+                <input
+                  className="text_pole category-color-input"
+                  type="color"
+                  value={category.color ?? '#6c7a89'}
+                  onChange={(event) => handleUpdateCategory(category.id, { color: event.target.value })}
+                />
                 <STButton className="menu_button danger_button" onClick={() => void handleDeleteCategory(category.id)}>
                   Remove
                 </STButton>

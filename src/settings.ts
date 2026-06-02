@@ -18,7 +18,7 @@ import { st_echo } from 'sillytavern-utils-lib/config';
 
 export const extensionName = 'SillyTavern-WorldInfo-Recommender';
 export const VERSION = '0.2.0';
-export const FORMAT_VERSION = 'F_1.4';
+export const FORMAT_VERSION = 'F_1.5';
 
 export const KEYS = {
   EXTENSION: 'worldInfoRecommender',
@@ -73,6 +73,12 @@ export interface ExtensionSettings {
   maxResponseToken: number;
   contextToSend: ContextToSend;
   defaultPromptEngineeringMode: PromptEngineeringMode;
+  /**
+   * When enabled, adding lore in a chat branch copies the inherited chat lorebook
+   * into a new branch-specific book (and disables the parent for that chat) so lore
+   * diverges per branch instead of mutating the shared book.
+   */
+  branchLorebooks: boolean;
   prompts: {
     stDescription: PromptSetting;
     currentLorebooks: PromptSetting;
@@ -144,6 +150,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   maxContextType: 'profile',
   maxContextValue: 16384,
   maxResponseToken: 1024,
+  branchLorebooks: true,
   contextToSend: {
     stDescription: true,
     messages: {
@@ -422,6 +429,20 @@ export async function initializeSettings(): Promise<void> {
                 isDefault: true,
                 label: 'Revise Global State (Removed)',
               };
+
+              return migrated;
+            },
+          },
+          {
+            from: 'F_1.4',
+            to: 'F_1.5',
+            action(previous: ExtensionSettings): ExtensionSettings {
+              const migrated = { ...previous };
+              migrated.formatVersion = 'F_1.5';
+
+              if (migrated.branchLorebooks === undefined) {
+                migrated.branchLorebooks = DEFAULT_SETTINGS.branchLorebooks;
+              }
 
               return migrated;
             },

@@ -155,7 +155,11 @@ export const EditEntryPopup = forwardRef<EditEntryPopupRef, EditEntryPopupProps>
       <div className="edit-popup-grid">
         <label>
           Activation
-          <select className="text_pole" value={activationMode} onChange={(e) => setActivationMode(e.target.value as ActivationMode)}>
+          <select
+            className="text_pole"
+            value={activationMode}
+            onChange={(e) => setActivationMode(e.target.value as ActivationMode)}
+          >
             {ACTIVATION_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -182,7 +186,13 @@ export const EditEntryPopup = forwardRef<EditEntryPopupRef, EditEntryPopupProps>
           <>
             <label>
               Depth
-              <input className="text_pole" type="number" min="0" value={depth} onChange={(e) => setDepth(e.target.value)} />
+              <input
+                className="text_pole"
+                type="number"
+                min="0"
+                value={depth}
+                onChange={(e) => setDepth(e.target.value)}
+              />
             </label>
             <label>
               Role

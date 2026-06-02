@@ -311,6 +311,30 @@ export const WorldInfoRecommenderSettings: FC = () => {
     <div className="world-info-recommender-settings">
       <div style={{ marginTop: '10px' }}>
         <div className="title_restorable">
+          <span>Branch Lorebooks</span>
+        </div>
+        <label className="checkbox_label" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <input
+            type="checkbox"
+            checked={settings.branchLorebooks}
+            onChange={(event) =>
+              updateAndRefresh((currentSettings) => {
+                currentSettings.branchLorebooks = event.target.checked;
+              })
+            }
+          />
+          <span>Create branch-specific lorebooks (copy parent on branch)</span>
+        </label>
+        <small className="notes" style={{ display: 'block', marginTop: '4px' }}>
+          When you add lore while in a chat branch, copy the inherited lorebook into a new book named after the branch
+          and disable the original for that chat, so branches don't overwrite each other's lore.
+        </small>
+      </div>
+
+      <hr style={{ margin: '10px 0' }} />
+
+      <div style={{ marginTop: '10px' }}>
+        <div className="title_restorable">
           <span>Main Context Template</span>
           <STButton
             className="fa-solid fa-undo"

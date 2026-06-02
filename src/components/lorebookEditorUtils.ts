@@ -72,16 +72,88 @@ export const cloneEntriesByWorld = (entriesByWorldName: Record<string, ExtendedW
     ]),
   );
 
+export const OPTIONAL_ENTRY_FIELDS = ['constant', 'vectorized', 'order', 'position', 'depth', 'role'] as const;
+export type OptionalEntryField = (typeof OPTIONAL_ENTRY_FIELDS)[number];
+
+/**
+ * Returns which field groups differ between a candidate entry and an existing one.
+ * Shared by the suggestion UI (to label changes) and the add/update flow (to detect
+ * no-op applies), so the comparison rules stay in one place.
+ */
+export const getChangedEntryFields = (entry: ExtendedWIEntry, existingEntry: ExtendedWIEntry): string[] => {
+  const changes: string[] = [];
+  if ((entry.comment ?? '') !== (existingEntry.comment ?? '')) changes.push('title');
+  if ((entry.content ?? '') !== (existingEntry.content ?? '')) changes.push('content');
+  if ((entry.key ?? []).slice().sort().join('\n') !== (existingEntry.key ?? []).slice().sort().join('\n')) {
+    changes.push('keys');
+  }
+  if (
+    OPTIONAL_ENTRY_FIELDS.some(
+      (field) => Object.prototype.hasOwnProperty.call(entry, field) && entry[field] !== existingEntry[field],
+    )
+  ) {
+    changes.push('settings');
+  }
+  return changes;
+};
+
+/** Builds the `{ entries: { [uid]: entry } }` shape SillyTavern uses for save/create calls. */
+export const toWorldInfoSaveFormat = <T extends { uid: number }>(entries: T[]): { entries: Record<number, T> } => ({
+  entries: Object.fromEntries(entries.map((entry) => [entry.uid, entry])),
+});
+
+export interface BranchForkDecisionInput {
+  /** Whether the branch-specific lorebook feature is enabled in settings. */
+  enabled: boolean;
+  /** The lorebook currently bound to the chat (chat_metadata['world_info']). */
+  boundBook: string | null | undefined;
+  /** The chatId that claimed ownership of the bound book (our private metadata marker). */
+  owner: string | null | undefined;
+  /** Whether the current chat is a branch/checkpoint (chat_metadata['main_chat'] is set). */
+  isBranch: boolean;
+  /** The current chat id. */
+  chatId: string | null | undefined;
+  /** All world/lorebook names known to SillyTavern. */
+  worldNames: string[];
+  /** The lorebook the user explicitly targeted for this add, if any. */
+  requested: string | null | undefined;
+}
+
+/**
+ * Decides whether adding an entry should fork the chat-bound lorebook into a
+ * branch-specific copy. Returns true only when the user is effectively writing
+ * to a chat lorebook that was INHERITED from a parent chat — i.e. this branch
+ * has not yet claimed its own book (owner !== chatId). An explicit, valid
+ * target that is not the chat-bound book is always respected and never forked.
+ */
+export const shouldForkBranchBook = ({
+  enabled,
+  boundBook,
+  owner,
+  isBranch,
+  chatId,
+  worldNames,
+  requested,
+}: BranchForkDecisionInput): boolean => {
+  if (!enabled || !isBranch || !chatId) return false;
+  if (!boundBook || !worldNames.includes(boundBook)) return false;
+  // Explicit, valid, non-chat-book target -> respect it, never fork.
+  if (requested && requested !== boundBook && worldNames.includes(requested)) return false;
+  // This branch already owns its bound book -> nothing to fork.
+  if (owner === chatId) return false;
+  return true;
+};
+
 export const normalizeExtendedEntry = (entry: ExtendedWIEntry): ExtendedWIEntry => {
   const roleAlias = entry.role ?? entry.roleAtDepth ?? entry.depth_role;
-  const normalized: ExtendedWIEntry = {
-    ...structuredClone(entry),
-    key: Array.isArray(entry.key) ? [...entry.key] : [],
-    keysecondary: Array.isArray(entry.keysecondary) ? [...entry.keysecondary] : [],
-    content: entry.content ?? '',
-    comment: entry.comment ?? '',
-    disable: !!entry.disable,
-  };
+  // structuredClone already produces fresh, independent copies of key/keysecondary,
+  // so we only fix up their shape here instead of cloning those arrays a second time.
+  const normalized: ExtendedWIEntry = structuredClone(entry);
+  if (!Array.isArray(normalized.key)) normalized.key = [];
+  if (!Array.isArray(normalized.keysecondary)) normalized.keysecondary = [];
+  normalized.content = entry.content ?? '';
+  normalized.comment = entry.comment ?? '';
+  normalized.disable = !!entry.disable;
 
   if (roleAlias !== undefined) {
     normalized.role = roleAlias;
@@ -92,13 +164,9 @@ export const normalizeExtendedEntry = (entry: ExtendedWIEntry): ExtendedWIEntry 
   return normalized;
 };
 
-export const normalizeEntriesByWorld = (entriesByWorldName: Record<string, ExtendedWIEntry[]>) =>
-  Object.fromEntries(
-    Object.entries(entriesByWorldName).map(([worldName, entries]) => [
-      worldName,
-      entries.map((entry) => normalizeExtendedEntry(entry)),
-    ]),
-  );
+// Normalizing a batch is exactly cloning it: normalizeExtendedEntry deep-clones each
+// entry, so these are the same operation under two names kept for call-site clarity.
+export const normalizeEntriesByWorld = cloneEntriesByWorld;
 
 export const sortEntriesByName = (entries: ExtendedWIEntry[], direction: SortDirection = 'asc') => {
   const multiplier = direction === 'desc' ? -1 : 1;
@@ -191,14 +259,18 @@ export const getEntryDateKey = (entry: ExtendedWIEntry): string | null =>
 
 export const sortEntriesByDate = (entries: ExtendedWIEntry[], direction: SortDirection = 'asc') => {
   const multiplier = direction === 'desc' ? -1 : 1;
-  return [...entries].sort((a, b) => {
-    const dateA = getEntryDateKey(a);
-    const dateB = getEntryDateKey(b);
-    if (!dateA && !dateB) return naturalNameCollator.compare(getEntryTitle(a), getEntryTitle(b));
-    if (!dateA) return 1;
-    if (!dateB) return -1;
-    return multiplier * dateA.localeCompare(dateB);
-  });
+  // Extract each entry's (regex-derived) date key and title once, then sort the decorated
+  // list — a comparator fires O(n log n) times, so computing keys inline would re-run the
+  // date regexes many times per entry.
+  return entries
+    .map((entry) => ({ entry, dateKey: getEntryDateKey(entry), title: getEntryTitle(entry) }))
+    .sort((a, b) => {
+      if (!a.dateKey && !b.dateKey) return naturalNameCollator.compare(a.title, b.title);
+      if (!a.dateKey) return 1;
+      if (!b.dateKey) return -1;
+      return multiplier * a.dateKey.localeCompare(b.dateKey);
+    })
+    .map((decorated) => decorated.entry);
 };
 
 export const sortEntries = (entries: ExtendedWIEntry[], sortSelection: SortSelection) => {
@@ -225,13 +297,26 @@ export const sortEntries = (entries: ExtendedWIEntry[], sortSelection: SortSelec
   }
 };
 
+// Cache first-word results by entry identity. Entries are treated immutably (edits
+// produce new objects), so a stale cache hit can't occur, and the grouping + filtering
+// passes over the same array no longer each re-run the regex per entry.
+const firstWordCache = new WeakMap<ExtendedWIEntry, EntryFirstWord>();
+
 export const getEntryFirstWord = (entry: ExtendedWIEntry): EntryFirstWord => {
+  const cached = firstWordCache.get(entry);
+  if (cached) return cached;
+
   const title = entry.comment?.trim();
+  let result: EntryFirstWord;
   if (!title) {
-    return { key: NO_COMMENT_FIRST_WORD_KEY, label: NO_COMMENT_FIRST_WORD_LABEL };
+    result = { key: NO_COMMENT_FIRST_WORD_KEY, label: NO_COMMENT_FIRST_WORD_LABEL };
+  } else {
+    const firstWord = title.split(/\s+/)[0]?.replace(/[^\p{L}\p{N}_'-]/gu, '') || title;
+    result = { key: firstWord.toLocaleLowerCase(), label: firstWord };
   }
-  const firstWord = title.split(/\s+/)[0]?.replace(/[^\p{L}\p{N}_'-]/gu, '') || title;
-  return { key: firstWord.toLocaleLowerCase(), label: firstWord };
+
+  firstWordCache.set(entry, result);
+  return result;
 };
 
 export const buildFirstWordGrouping = (entries: ExtendedWIEntry[]): EntryFirstWord[] => {
@@ -301,7 +386,11 @@ export const sanitizeCategoryStorage = (value: unknown): LorebookCategoryStorage
 
     const validCategoryIds = new Set(categories.map((category) => category.id));
     const entryAssignments: Record<string, string> = {};
-    if (state.entryAssignments && typeof state.entryAssignments === 'object' && !Array.isArray(state.entryAssignments)) {
+    if (
+      state.entryAssignments &&
+      typeof state.entryAssignments === 'object' &&
+      !Array.isArray(state.entryAssignments)
+    ) {
       Object.entries(state.entryAssignments).forEach(([uid, categoryId]) => {
         if (/^\d+$/.test(uid) && typeof categoryId === 'string' && validCategoryIds.has(categoryId)) {
           entryAssignments[uid] = categoryId;
@@ -338,6 +427,7 @@ export const parseNumberInput = (value: string): number | undefined => {
 export const getPositionLabel = (position?: number | null) =>
   POSITION_OPTIONS.find((option) => option.value === position)?.label ?? 'Unset';
 
-export const getRoleLabel = (role?: number | null) => ROLE_OPTIONS.find((option) => option.value === role)?.label ?? 'System';
+export const getRoleLabel = (role?: number | null) =>
+  ROLE_OPTIONS.find((option) => option.value === role)?.label ?? 'System';
 
 export const getEntryIdentity = (worldName: string, uid: number) => `${worldName}::${uid}`;
