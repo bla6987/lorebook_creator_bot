@@ -69,6 +69,7 @@ const CHAT_MODEL_SELECTORS: Record<string, string> = {
   makersuite: '#model_google_select',
   vertexai: '#model_vertexai_select',
   mistralai: '#model_mistralai_select',
+  custom: '#custom_model_id',
   cohere: '#model_cohere_select',
   perplexity: '#model_perplexity_select',
   groq: '#model_groq_select',
@@ -84,11 +85,14 @@ const CHAT_MODEL_SELECTORS: Record<string, string> = {
   moonshot: '#model_moonshot_select',
   fireworks: '#model_fireworks_select',
   cometapi: '#model_cometapi_select',
+  azure_openai: '#azure_openai_model',
   zai: '#model_zai_select',
   workers_ai: '#model_workers_ai_select',
 };
 
 const TEXT_MODEL_SELECTORS: Record<string, string> = {
+  generic: '#generic_model_textgenerationwebui',
+  ooba: '#custom_model_textgenerationwebui',
   mancer: '#mancer_model',
   togetherai: '#model_togetherai_select',
   openrouter: '#openrouter_model',
@@ -186,18 +190,40 @@ const calculateOpenRouterMaxPromptCost = (profile: ConnectionProfile, preset: Re
 
 const extractSelectOptions = (selector?: string): ModelOption[] => {
   if (!selector) return [];
-  const select = document.querySelector(selector);
-  if (!(select instanceof HTMLSelectElement)) return [];
+  const control = document.querySelector(selector);
+  if (!(control instanceof HTMLSelectElement) && !(control instanceof HTMLInputElement)) return [];
 
   const options: ModelOption[] = [];
-  for (const option of Array.from(select.options)) {
+  const seen = new Set<string>();
+
+  const addOption = (option: HTMLOptionElement, group?: string) => {
     const value = option.value;
-    const label = option.textContent?.trim() || value;
-    if (!value || label.includes('-- Connect to the API --')) continue;
-    const groupElement = option.parentElement;
-    const group = groupElement instanceof HTMLOptGroupElement ? groupElement.label : undefined;
+    const label = option.textContent?.trim() || option.label?.trim() || value;
+    if (!value || seen.has(value) || label.includes('-- Connect to the API --')) return;
+    seen.add(value);
     options.push({ value, label, group });
+  };
+
+  if (control instanceof HTMLSelectElement) {
+    for (const option of Array.from(control.options)) {
+      const groupElement = option.parentElement;
+      const group = groupElement instanceof HTMLOptGroupElement ? groupElement.label : undefined;
+      addOption(option, group);
+    }
+    return options;
   }
+
+  const currentValue = control.value.trim();
+  if (currentValue) {
+    addOption(new Option(currentValue, currentValue));
+  }
+
+  if (control.list instanceof HTMLDataListElement) {
+    for (const option of Array.from(control.list.options)) {
+      addOption(option);
+    }
+  }
+
   return options;
 };
 
