@@ -17,7 +17,7 @@ import { globalContext } from './generate.js';
 import { st_echo } from 'sillytavern-utils-lib/config';
 
 export const extensionName = 'SillyTavern-WorldInfo-Recommender';
-export const VERSION = '0.2.0';
+export const VERSION = '0.2.1';
 export const FORMAT_VERSION = 'F_1.5';
 
 export const KEYS = {

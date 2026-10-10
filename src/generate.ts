@@ -1,3 +1,4 @@
+import { getEntryKeys, normalizeExtendedEntry } from './components/lorebookEditorUtils.js';
 import { buildPrompt, BuildPromptOptions, ExtensionSettingsManager, Message } from 'sillytavern-utils-lib';
 import { ExtractedData } from 'sillytavern-utils-lib/types';
 import { getFullXML, getPrefilledXML, parseXMLOwn } from './xml.js';
@@ -224,17 +225,14 @@ export async function runWorldInfoRecommendation({
     entries.forEach((entry) => {
       const existentWI = entriesGroupByWorldName[worldName]?.find((e) => e.uid === entry.uid);
       if (existentWI) {
-        if (entry.key.length === 0) {
-          entry.key = existentWI.key;
+        if (getEntryKeys(entry).length === 0) {
+          entry.key = getEntryKeys(existentWI);
         }
         if (!entry.comment) {
           entry.comment = existentWI.comment;
         }
       }
-      // Ensure comment is at least an empty string if somehow still missing
-      if (entry.comment === null || entry.comment === undefined) {
-        entry.comment = '';
-      }
+      Object.assign(entry, normalizeExtendedEntry(entry));
     });
   });
 
@@ -295,7 +293,7 @@ export function prepareEntryModification(
   }
 
   // Update entry properties from the suggestion
-  targetEntry.key = entry.key;
+  targetEntry.key = getEntryKeys(entry);
   targetEntry.content = entry.content;
   targetEntry.comment = entry.comment;
   // Optionally update other fields if the AI could suggest them, e.g.,

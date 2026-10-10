@@ -55,3 +55,10 @@ Gemini models are cheap, fast, and efficient. I usually use Gemini Flash 2.0. Bu
 - Make sure your max response tokens are set high enough to accommodate the response. Try increasing it to 2000/more. Or prompt the entry limit to a smaller number. Like *"Only give me a maximum of 2 entries."*
 - Please don't try to use a fancy chat completion preset. They are made for RP. Not for generating structured XML output. So, create a connection profile with the default preset.
 - As I said in the first question, make sure your model is capable of generating structured XML output.
+
+
+## Custom fork: history storage and upstream fixes
+
+Main recommendation sessions and revision histories now use SillyTavern's IndexedDB-backed storage. Existing browser-local histories migrate when opened; the old copy is removed only after the new write succeeds. A failed migration keeps and loads the old history. Failed reads or invalid data preserve the original and block history writes until the popup is reopened successfully. Storage errors are shown instead of silently resetting history. Histories remain browser-local, not synced between devices.
+
+The custom API settings, prompt preview, mobile layout, extended lorebook fields, batch saving and branch-specific lorebooks are retained. Missing trigger lists are normalized in revision and prompt-preview paths. These changes selectively adapt upstream session-storage and keyword fixes without replacing the custom editor or Apply All logic.

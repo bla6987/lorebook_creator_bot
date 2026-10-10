@@ -1,3 +1,4 @@
+import { getEntryKeys } from './components/lorebookEditorUtils.js';
 import * as Handlebars from 'handlebars';
 import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { ReviseMessage, CHAT_HISTORY_PLACEHOLDER_ID, ReviseSessionType } from './revise-types.js';
@@ -53,7 +54,7 @@ export async function buildInitialReviseMessages(
     templateData['entryToRevise'] = {
       worldName: worldName,
       name: entryToRevise.comment,
-      triggers: entryToRevise.key.join(', '),
+      triggers: getEntryKeys(entryToRevise).join(', '),
       content: entryToRevise.content,
     };
   }

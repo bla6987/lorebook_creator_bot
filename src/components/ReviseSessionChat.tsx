@@ -1,3 +1,4 @@
+import { getEntryKeys, normalizeExtendedEntry } from './lorebookEditorUtils.js';
 import { FC, useState, useEffect, useRef, useCallback } from 'react';
 import { STButton, STTextarea, Popup, STInput } from 'sillytavern-utils-lib/components/react';
 import {
@@ -29,9 +30,9 @@ const globalContext = SillyTavern.getContext();
 const calculateNewState = (prevState: WIEntry, response: EntryRevisionResponse): WIEntry => {
   const newState = structuredClone(prevState);
   newState.comment = response.name;
-  newState.key = response.triggers;
+  newState.key = Array.isArray(response.triggers) ? response.triggers : getEntryKeys(prevState);
   newState.content = response.content;
-  return newState;
+  return normalizeExtendedEntry(newState);
 };
 
 const calculateNewGlobalState = (
@@ -57,7 +58,7 @@ const calculateNewGlobalState = (
       const entryToChange = newState[worldName]?.find((e) => e.comment === originalName);
       if (entryToChange) {
         if (op.newName !== undefined) entryToChange.comment = op.newName;
-        if (op.triggers !== undefined) entryToChange.key = op.triggers;
+        if (op.triggers !== undefined) entryToChange.key = Array.isArray(op.triggers) ? op.triggers : getEntryKeys(entryToChange);
         if (op.content !== undefined) entryToChange.content = op.content;
       } else {
         console.warn(`[WREC] Could not find entry to change: "${originalName}" in world "${worldName}"`);
@@ -77,9 +78,9 @@ const calculateNewGlobalState = (
       const newEntry = st_createWorldInfoEntry(worldName, stFormat);
       if (newEntry) {
         newEntry.comment = name;
-        newEntry.key = triggers;
+        newEntry.key = Array.isArray(triggers) ? triggers : [];
         newEntry.content = content;
-        newState[worldName].push(newEntry);
+        newState[worldName].push(normalizeExtendedEntry(newEntry));
       }
     }
   }
@@ -95,7 +96,7 @@ const EditStatePopup: FC<{
   onClose: () => void;
 }> = ({ initialState, onSave, onClose }) => {
   const [name, setName] = useState(initialState.comment);
-  const [triggers, setTriggers] = useState(initialState.key.join(', '));
+  const [triggers, setTriggers] = useState(getEntryKeys(initialState).join(', '));
   const [content, setContent] = useState(initialState.content);
 
   const handleSave = () => {

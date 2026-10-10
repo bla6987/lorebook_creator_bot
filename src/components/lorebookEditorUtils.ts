@@ -144,6 +144,9 @@ export const shouldForkBranchBook = ({
   return true;
 };
 
+export const getEntryKeys = (entry: Pick<ExtendedWIEntry, 'key'> | null | undefined): string[] =>
+  Array.isArray(entry?.key) ? entry.key : [];
+
 export const normalizeExtendedEntry = (entry: ExtendedWIEntry): ExtendedWIEntry => {
   const roleAlias = entry.role ?? entry.roleAtDepth ?? entry.depth_role;
   // structuredClone already produces fresh, independent copies of key/keysecondary,

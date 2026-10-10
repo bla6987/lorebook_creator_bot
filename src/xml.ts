@@ -1,3 +1,4 @@
+import { getEntryKeys } from './components/lorebookEditorUtils.js';
 import { XMLParser } from 'fast-xml-parser';
 import { ExtendedWIEntry } from './types.js';
 
@@ -148,7 +149,7 @@ export function getPrefilledXML(worldName: string, entry: ExtendedWIEntry): stri
     <worldName>${worldName}</worldName>
     <id>${entry.uid}</id>
     <name>${entry.comment}</name>
-    <triggers>${entry.key.join(',')}</triggers>
+    <triggers>${getEntryKeys(entry).join(',')}</triggers>
 ${buildOptionalXmlFields(entry)}    <content>${entry.content}`;
 }
 
@@ -159,7 +160,7 @@ export function getFullXML(worldName: string, entry: ExtendedWIEntry): string {
     <worldName>${worldName}</worldName>
     <id>${entry.uid}</id>
     <name>${entry.comment}</name>
-    <triggers>${entry.key.join(',')}</triggers>
+    <triggers>${getEntryKeys(entry).join(',')}</triggers>
 ${buildOptionalXmlFields(entry)}    <content>${entry.content}</content>
   </entry>
 </lorebooks>`;

@@ -1,4 +1,4 @@
-import { FC, useState, useEffect, useMemo } from 'react';
+import { FC, useState, useEffect, useMemo, useRef } from 'react';
 import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { ReviseSession, ReviseState } from '../revise-types.js';
 import { STButton } from 'sillytavern-utils-lib/components/react';
@@ -9,9 +9,9 @@ import { st_echo, selected_group, this_chid } from 'sillytavern-utils-lib/config
 import { BuildPromptOptions } from 'sillytavern-utils-lib';
 import { Session } from '../generate.js';
 import { getRuntimeConnectionProfile } from '../api-settings.js';
+import { loadReviseSessions, saveReviseSessions } from '../revise-session-storage.js';
 
 const globalContext = SillyTavern.getContext();
-const REVISE_SESSIONS_KEY = 'worldInfoRecommender_reviseSessions';
 
 interface ReviseSessionManagerProps {
   target: { type: 'global' } | { type: 'entry'; worldName: string; entry: WIEntry };
@@ -37,6 +37,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   const [allSessions, setAllSessions] = useState<ReviseSession[]>([]);
   const [activeSession, setActiveSession] = useState<ReviseSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const historyWritable = useRef(false);
 
   const targetIdentifier = useMemo(() => {
     if (target.type === 'entry') {
@@ -46,9 +47,20 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   }, [target]);
 
   useEffect(() => {
-    const sessionsFromStorage: ReviseSession[] = JSON.parse(localStorage.getItem(REVISE_SESSIONS_KEY) || '[]');
-    setAllSessions(sessionsFromStorage);
-    setIsLoading(false);
+    let mounted = true;
+    void loadReviseSessions().then((result) => {
+      if (!mounted) return;
+      historyWritable.current = result.writable;
+      setAllSessions(result.value);
+      if (result.error) {
+        console.warn('Revision history storage:', result.error);
+        st_echo('warning', result.writable
+          ? 'Revision history was loaded from its original storage, but migration failed. The original has been kept.'
+          : 'Revision history could not be read safely. Its original data has been kept; reopen before saving history.');
+      }
+      setIsLoading(false);
+    });
+    return () => { mounted = false; historyWritable.current = false; };
   }, []);
 
   const filteredSessions = useMemo(() => {
@@ -63,8 +75,17 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   }, [allSessions, target.type, targetIdentifier]);
 
   const saveAllSessions = (updatedSessions: ReviseSession[]) => {
-    localStorage.setItem(REVISE_SESSIONS_KEY, JSON.stringify(updatedSessions));
     setAllSessions(updatedSessions);
+    if (!historyWritable.current) {
+      st_echo('warning', 'Revision history has not been saved. Reopen this popup after browser storage is available.');
+      return;
+    }
+    void saveReviseSessions(updatedSessions).then((result) => {
+      if (!result.persisted) {
+        console.warn('Failed to save revision history:', result.error);
+        st_echo('warning', 'Revision history could not be saved. Keep this popup open and check browser storage.');
+      }
+    });
   };
 
   const handleCreateNewSession = async () => {

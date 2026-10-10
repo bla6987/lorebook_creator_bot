@@ -46,6 +46,7 @@ import {
   toWorldInfoSaveFormat,
 } from './lorebookEditorUtils.js';
 import { WorldInfoRecommenderSettings } from './Settings.js';
+import { loadMainSession, saveMainSession } from '../main-session-storage.js';
 
 if (!Handlebars.helpers['join']) {
   Handlebars.registerHelper('join', function (array: any, separator: any) {
@@ -174,10 +175,14 @@ export const MainPopup: FC = () => {
   const selectEntriesPopupRef = useRef<SelectEntriesPopupRef>(null);
   const importPopupRef = useRef<SelectEntriesPopupRef>(null);
   const previousSuggestionCountRef = useRef(0);
+  const loadVersionRef = useRef(0);
+  const loadedSessionRef = useRef<{ key: string; writable: boolean } | null>(null);
 
   const avatarKey = useMemo(() => getAvatar() ?? '_global', [this_chid, selected_group]);
 
   const loadData = useCallback(async () => {
+    const version = ++loadVersionRef.current;
+    loadedSessionRef.current = null;
     setIsLoading(true);
     setEntriesGroupByWorldName({});
     setAllWorldNames([]);
@@ -185,9 +190,15 @@ export const MainPopup: FC = () => {
     setSuggestionTargetWorlds({});
 
     const avatar = getAvatar();
-    const key = `worldInfoRecommend_${avatarKey}`;
-
-    const savedSession: Partial<Session> = JSON.parse(localStorage.getItem(key) ?? '{}');
+    const loaded = await loadMainSession(avatarKey);
+    if (version !== loadVersionRef.current) return;
+    const savedSession = loaded.value;
+    if (loaded.error) {
+      console.warn('Could not fully load/migrate World Info Recommender history:', loaded.error);
+      st_echo('warning', loaded.writable
+        ? 'Saved history was loaded from the original storage, but could not be migrated. The original has been kept.'
+        : 'History storage could not be read safely. The original data has been kept; reopen this popup before saving history.');
+    }
     const initialSession: Session = {
       suggestedEntries: normalizeEntriesByWorld(savedSession.suggestedEntries ?? {}),
       blackListedEntries: savedSession.blackListedEntries ?? [],
@@ -222,6 +233,7 @@ export const MainPopup: FC = () => {
       }
     }
 
+    if (version !== loadVersionRef.current) return;
     loadedEntries = normalizeEntriesByWorld(loadedEntries);
     setEntriesGroupByWorldName(loadedEntries);
     const loadedWorldNames = Object.keys(loadedEntries);
@@ -260,17 +272,23 @@ export const MainPopup: FC = () => {
       }
     }
 
+    loadedSessionRef.current = { key: avatarKey, writable: loaded.writable };
     setIsLoading(false);
   }, [avatarKey]);
 
   useEffect(() => {
     void loadData();
+    return () => { ++loadVersionRef.current; loadedSessionRef.current = null; };
   }, [loadData]);
 
   useEffect(() => {
-    if (isLoading) return;
-    const key = `worldInfoRecommend_${avatarKey}`;
-    localStorage.setItem(key, JSON.stringify(session));
+    if (isLoading || loadedSessionRef.current?.key !== avatarKey || !loadedSessionRef.current?.writable) return;
+    void saveMainSession(avatarKey, session).then((result) => {
+      if (!result.persisted) {
+        console.warn('Failed to save World Info Recommender session:', result.error);
+        st_echo('warning', 'Session history could not be saved. Keep this popup open and check browser storage.');
+      }
+    });
   }, [session, avatarKey, isLoading]);
 
   const updateSetting = <K extends keyof ExtensionSettings>(key: K, value: ExtensionSettings[K]) => {
