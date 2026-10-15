@@ -2,6 +2,7 @@ import { ChangeEvent, CSSProperties, FC, useCallback, useEffect, useMemo, useRef
 import { Popup, STButton } from 'sillytavern-utils-lib/components/react';
 import { st_echo } from 'sillytavern-utils-lib/config';
 import { ExtendedWIEntry, SaveEntryPayload } from '../types.js';
+import { escapeHtml } from '../html-utils.js';
 import { Session } from '../generate.js';
 import { ExtensionSettings } from '../settings.js';
 import { ReviseSessionManager } from './ReviseSessionManager.js';
@@ -600,7 +601,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     if (!category) return;
     const confirmed = await globalContext.Popup.show.confirm(
       'Delete Category',
-      `Remove category "${category.name}"? Entries will become uncategorized.`,
+      `Remove category "${escapeHtml(category.name)}"? Entries will become uncategorized.`,
     );
     if (!confirmed) return;
 
@@ -659,7 +660,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     const label = entry?.comment?.trim() || `UID ${uid}`;
     const confirmed = await globalContext.Popup.show.confirm(
       'Draft Delete Entry',
-      `Hide "${label}" from the editor until Save All is clicked?`,
+      `Hide "${escapeHtml(label)}" from the editor until Save All is clicked?`,
     );
     if (!confirmed) return;
     const id = getEntryIdentity(worldName, uid);

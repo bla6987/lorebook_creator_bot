@@ -13,6 +13,7 @@ import {
 } from './generate.js';
 import { ContextToSend, settingsManager } from './settings.js';
 import { saveWorldInfoChecked } from './world-info-save.js';
+import { escapeHtml } from './html-utils.js';
 
 export function initializeCommands() {
   /**
@@ -574,7 +575,7 @@ export function initializeCommands() {
                   <strong>Modified Lorebooks:</strong>
                   <ul>
                   ${Array.from(modifiedWorlds)
-                    .map((world) => `<li>${world}</li>`)
+                    .map((world) => `<li>${escapeHtml(world)}</li>`)
                     .join('')}
                   </ul>
                 </div>

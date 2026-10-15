@@ -22,6 +22,7 @@ import {
   SYSTEM_PROMPT_KEYS,
 } from '../settings.js';
 import { useForceUpdate } from '../hooks/useForceUpdate.js';
+import { escapeHtml } from '../html-utils.js';
 
 const globalContext = SillyTavern.getContext();
 
@@ -277,7 +278,10 @@ export const WorldInfoRecommenderSettings: FC = () => {
     const prompt = settings.prompts[selectedSystemPrompt as keyof typeof settings.prompts];
     if (!prompt) return st_echo('warning', 'No prompt selected.');
 
-    const confirm = await globalContext.Popup.show.confirm('Restore Default', `Restore default for "${prompt.label}"?`);
+    const confirm = await globalContext.Popup.show.confirm(
+      'Restore Default',
+      `Restore default for "${escapeHtml(prompt.label)}"?`,
+    );
     if (confirm) {
       updateAndRefresh((s) => {
         // Create a new prompts object with the restored content.

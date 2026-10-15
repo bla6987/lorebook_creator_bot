@@ -12,6 +12,12 @@ import { ExtendedWIEntry } from '../types.js';
 import { getActivationMode, getChangedEntryFields, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
 
 const converter = new showdown.Converter();
+// MESSAGE_SANITIZE enables SillyTavern's DOMPurify hooks (external media blocking, class prefixing).
+const sanitizeConfig = {
+  FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'],
+  FORBID_ATTR: ['style', 'id'],
+  MESSAGE_SANITIZE: true,
+};
 
 export interface SuggestedEntryProps {
   displayIndex?: number;
@@ -120,7 +126,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
   };
 
   const renderedContent = useMemo(
-    () => SillyTavern.libs.DOMPurify.sanitize(converter.makeHtml(entry.content ?? '')),
+    () => SillyTavern.libs.DOMPurify.sanitize(converter.makeHtml(entry.content ?? ''), sanitizeConfig),
     [entry.content],
   );
 

@@ -76,6 +76,7 @@ async function initializeRun() {
     },
     './settings.js': { settingsManager: { getSettings: () => harness.settings } },
     './world-info-save.js': { saveWorldInfoChecked: harness.save },
+    './html-utils.js': compileSource('../html-utils.ts', {}),
   });
   initializeCommands();
   const callback = harness.commands.find((command) => command.name === 'world-info-recommender-run').callback;
@@ -244,5 +245,16 @@ describe('slash command persistence', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  test('escapes modified lorebook names in the HTML success summary', async () => {
+    const world = '<img src=x onerror="alert(1)">';
+    harness.worlds = { [world]: [makeEntry()] };
+    harness.suggestions = { [world]: [makeEntry(1, 'Original', 'Changed')] };
+    const run = await initializeRun();
+    expect(await run()).toBe(true);
+    const [, message] = harness.echo.mock.calls.find(([level]) => level === 'success')!;
+    expect(message).toContain('<li>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</li>');
+    expect(message).not.toContain('<img');
   });
 });

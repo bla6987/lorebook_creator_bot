@@ -1,20 +1,13 @@
 import { FC, useMemo } from 'react';
 import { diffWords } from 'diff';
 import { ExtendedWIEntry } from '../types.js';
+import { escapeHtml } from '../html-utils.js';
 import { getActivationMode, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
 
 interface CompareEntryPopupProps {
   originalEntry: ExtendedWIEntry;
   newEntry: ExtendedWIEntry;
 }
-
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 
 const formatValue = (value: unknown) => {
   if (Array.isArray(value)) return value.join(', ');

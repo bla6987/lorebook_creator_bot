@@ -8,6 +8,7 @@ import ts from 'typescript';
 import * as Handlebars from 'handlebars';
 import showdown from 'showdown';
 import * as utils from '../components/lorebookEditorUtils.js';
+import * as htmlUtils from '../html-utils.js';
 import type { ExtendedWIEntry } from '../types.js';
 
 const entry = (uid: number, comment: string): ExtendedWIEntry => ({
@@ -87,6 +88,7 @@ function compile(file: string, modules: Record<string, unknown>) {
     'sillytavern-utils-lib/config': config,
     'sillytavern-utils-lib/types/popup': { POPUP_TYPE: {} },
     './lorebookEditorUtils.js': utils,
+    '../html-utils.js': htmlUtils,
     ...modules,
   };
   new Function('require', 'exports', compiled)((name: string) => {
@@ -194,7 +196,10 @@ test('suggestion rendering inserts only host-sanitized Markdown and memoizes it'
   const props = suggestionProps();
   props.entry.content = '<img src=x onerror="window.hacked=1">';
   await mount(SuggestedEntry, props);
-  expect(sanitize).toHaveBeenCalledWith(expect.stringContaining('onerror='));
+  expect(sanitize).toHaveBeenCalledWith(
+    expect.stringContaining('onerror='),
+    expect.objectContaining({ MESSAGE_SANITIZE: true, FORBID_ATTR: expect.arrayContaining(['style']) }),
+  );
   expect(container.querySelector('.content')?.innerHTML).toBe('<strong>Sanitized</strong>');
   expect(container.querySelector('[onerror]')).toBeNull();
   await click('Revise');

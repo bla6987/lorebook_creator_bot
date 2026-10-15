@@ -112,6 +112,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   const handleCreateNewSession = async () => {
     const name = await globalContext.Popup.show.input(
       'New Session Name',
+      'Session name:',
       target.type === 'entry'
         ? `Revise "${target.entry.comment}" - ${new Date().toLocaleDateString()}`
         : `Global Revise - ${new Date().toLocaleDateString()}`,
