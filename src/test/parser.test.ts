@@ -316,3 +316,93 @@ The user wants a city entry.</think>\n${baseXml}`;
     expect(result).toEqual({});
   });
 });
+
+describe('XML response regressions', () => {
+  test('parses the actual generated entry example without corrupting its trigger array', async () => {
+    const { z } = await import('zod');
+    const { EntryRevisionResponseSchema } = await import('../revise-types.js');
+    const { schemaToExample } = await import('../schema-to-example.js');
+    const schema = z.toJSONSchema(EntryRevisionResponseSchema);
+    const result = parseResponse(schemaToExample(schema, 'xml'), 'xml', { schema });
+    expect(EntryRevisionResponseSchema.parse(result).triggers).toEqual(['string']);
+  });
+
+  test('unwraps one or multiple primitive items and distinguishes empty arrays from empty items', () => {
+    const schema = { type: 'object', properties: { triggers: { type: 'array', items: { type: 'string' } } } };
+    expect(parseResponse('<root><triggers><item>00123</item><item>second</item></triggers></root>', 'xml', { schema }))
+      .toEqual({ triggers: ['00123', 'second'] });
+    expect(parseResponse('<root><triggers><item/></triggers></root>', 'xml', { schema }))
+      .toEqual({ triggers: [''] });
+    expect(parseResponse('<root><triggers/></root>', 'xml', { schema })).toEqual({ triggers: [] });
+    expect(() => parseResponse('<root><triggers><unexpected>bad</unexpected></triggers></root>', 'xml', { schema }))
+      .toThrow('Expected text items');
+  });
+
+  test('round-trips markup, entities, and numeric text through both XML serializers', async () => {
+    const { getFullXML, getPrefilledXML } = await import('../xml.js');
+    const { getFull, getPrefilled } = await import('../parsers.js');
+    const entry = { uid: 7, key: ['00123', '<tag>', 'A & B'], keysecondary: [],
+      content: 'A <b>bold</b> entry & literal &amp; entity.', comment: '<name> & "quoted"', disable: false };
+    const world = '00123 <world> & more';
+    for (const serialized of [getFullXML(world, entry), getFull(world, entry as any, 'xml')]) {
+      const parsed = parseXMLOwn(serialized)[world][0];
+      expect(parsed.content).toBe(entry.content);
+      expect(parsed.comment).toBe(entry.comment);
+      expect(parsed.key).toEqual(entry.key);
+    }
+    for (const prefilled of [getPrefilledXML(world, entry), getPrefilled(world, entry as any, 'xml')]) {
+      const parsed = parseXMLOwn(' Continued.</content></entry></lorebooks>', { previousContent: prefilled })[world][0];
+      expect(parsed.content).toBe(`${entry.content} Continued.`);
+    }
+    const numeric = { ...entry, key: ['00123'], content: '00123', comment: '00123' };
+    expect(parseXMLOwn(getFullXML('00123', numeric))['00123'][0]).toMatchObject({
+      key: ['00123'], content: '00123', comment: '00123',
+    });
+  });
+
+  test('accepts CDATA markup and rejects unexpected nested objects instead of erasing text', () => {
+    const prefix = '<lorebooks><entry><worldName>Earth</worldName><name>Entry</name><content>';
+    const suffix = '</content></entry></lorebooks>';
+    expect(parseXMLOwn(`${prefix}<![CDATA[A <b>bold</b> entry]]>${suffix}`).Earth[0].content)
+      .toBe('A <b>bold</b> entry');
+    expect(() => parseXMLOwn(`${prefix}A <b>bold</b> entry${suffix}`)).toThrow();
+  });
+
+  test('preserves literal reasoning tags in CDATA while discarding only the model preamble', () => {
+    const literal = '<think>literal lore</think> <thinking>memory</thinking> <reasoning>reason</reasoning>';
+    const document = `<lorebooks><entry><worldName>Earth</worldName><name>Entry</name>
+      <content><![CDATA[${literal}]]></content></entry></lorebooks>`;
+    const preamble = `<think>Plan with an example: <lorebooks><entry>not the answer</entry></lorebooks></think>
+      <reasoning>Now produce the actual answer.</reasoning>`;
+    expect(parseXMLOwn(document).Earth[0].content).toBe(literal);
+    expect(parseXMLOwn(`${preamble}${document}`).Earth[0].content).toBe(literal);
+    const split = document.indexOf(literal);
+    expect(parseXMLOwn(document.slice(split), { previousContent: document.slice(0, split) }).Earth[0].content)
+      .toBe(literal);
+  });
+
+  test('removes enclosing response fences while preserving literal code fences in lore text', async () => {
+    const { getFullXML, getPrefilledXML } = await import('../xml.js');
+    const literal = 'Example:\n```xml\n<literal>Keep this</literal>\n```\nEnd.';
+    const entry = { uid: 7, key: ['trigger'], keysecondary: [], comment: 'Entry', content: literal, disable: false };
+    const document = getFullXML('Earth', entry);
+    expect(parseXMLOwn(document).Earth[0].content).toBe(literal);
+    expect(parseXMLOwn('```xml\n' + document + '\n```').Earth[0].content).toBe(literal);
+    expect(parseXMLOwn('<think>Planning...</think>\n```xml\n' + document + '\n```').Earth[0].content)
+      .toBe(literal);
+    expect(parseXMLOwn('```xml\n<think>Planning...</think>\n' + document + '\n```').Earth[0].content)
+      .toBe(literal);
+    expect(parseXMLOwn('```xml\n continued</content></entry></lorebooks>\n```', {
+      previousContent: getPrefilledXML('Earth', entry),
+    }).Earth[0].content).toBe(literal + ' continued');
+    const cdata = `<lorebooks><entry><worldName>Earth</worldName><name>Entry</name><content><![CDATA[${literal}]]></content></entry></lorebooks>`;
+    expect(parseXMLOwn(cdata).Earth[0].content).toBe(literal);
+  });
+
+  test('rejects a truncated second entry even when the first entry is complete', () => {
+    const complete = '<lorebooks><entry><worldName>Earth</worldName><name>Complete</name><content>Fine</content></entry>';
+    expect(() => parseXMLOwn(`${complete}<entry><worldName>Earth</worldName><name>Truncated</name><content>Cut off`))
+      .toThrow('Model response is not valid XML');
+    expect(() => parseXMLOwn(`${complete}</lorebooks>`)).not.toThrow();
+  });
+});

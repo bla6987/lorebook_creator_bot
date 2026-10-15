@@ -57,6 +57,7 @@ interface EntryEditorProps {
   viewMode: ViewMode;
   isSelected: boolean;
   isDirty: boolean;
+  isSaving: boolean;
   categoryId: string;
   categories: LorebookCategory[];
   onToggleSelected: (worldName: string, uid: number, event: ChangeEvent<HTMLInputElement>) => void;
@@ -106,6 +107,7 @@ const EntryEditor: FC<EntryEditorProps> = ({
   viewMode,
   isSelected,
   isDirty,
+  isSaving,
   categoryId,
   categories,
   onToggleSelected,
@@ -280,7 +282,7 @@ const EntryEditor: FC<EntryEditorProps> = ({
         <STButton className="menu_button" onClick={() => onRevise(worldName, entry.uid)}>
           <i className="fa-solid fa-comments"></i> AI Revise
         </STButton>
-        <STButton className="menu_button" disabled={!isDirty} onClick={() => onSave(worldName, entry.uid)}>
+        <STButton className="menu_button" disabled={!isDirty || isSaving} onClick={() => onSave(worldName, entry.uid)}>
           Save Entry
         </STButton>
         <STButton className="menu_button danger_button" onClick={() => onDelete(worldName, entry.uid)}>
@@ -335,6 +337,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+  const [isSaving, setIsSaving] = useState(false);
   const [categoryStorage, setCategoryStorage] = useState<LorebookCategoryStorage>(() =>
     sanitizeCategoryStorage(readJsonStorage(CATEGORY_STORAGE_KEY, {})),
   );
@@ -353,12 +356,37 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const [reviseTarget, setReviseTarget] = useState<{ worldName: string; uid: number } | null>(null);
 
   const lastSelectedIdRef = useRef<string | null>(null);
+  const draftEntriesRef = useRef(draftEntries);
+  const dirtyIdsRef = useRef(dirtyIds);
+  const deletedIdsRef = useRef(deletedIds);
+  draftEntriesRef.current = draftEntries;
+  dirtyIdsRef.current = dirtyIds;
+  deletedIdsRef.current = deletedIds;
 
   useEffect(() => {
-    setDraftEntries(structuredClone(normalizedEntries));
-    setDirtyIds(new Set());
-    setDeletedIds(new Set());
-    setSelectedIds(new Set());
+    // Parent saves refresh the baseline. Keep drafts that have not been acknowledged
+    // by their own save, including edits made while an earlier save was in flight.
+    setDraftEntries((previous) =>
+      Object.fromEntries(
+        Object.entries(normalizedEntries).map(([worldName, entries]) => {
+          const previousEntries = previous[worldName] ?? [];
+          const retained = new Map(
+            previousEntries
+              .filter((entry) => {
+                const id = getEntryIdentity(worldName, entry.uid);
+                return dirtyIdsRef.current.has(id) || deletedIdsRef.current.has(id);
+              })
+              .map((entry) => [entry.uid, entry]),
+          );
+          const merged = entries.map((entry) => retained.get(entry.uid) ?? structuredClone(entry));
+          const incomingUids = new Set(entries.map((entry) => entry.uid));
+          retained.forEach((entry, uid) => {
+            if (!incomingUids.has(uid)) merged.push(entry);
+          });
+          return [worldName, merged];
+        }),
+      ),
+    );
     setSelectedWorldName((current) => {
       if (current && normalizedEntries[current]) return current;
       return worldNames[0] ?? '';
@@ -605,14 +633,25 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   };
 
   const handleSaveEntry = async (worldName: string, uid: number) => {
+    if (isSaving) return;
     const entry = draftEntries[worldName]?.find((item) => item.uid === uid);
     if (!entry) return;
-    await onSaveEntries(worldName, [{ entry, originalUid: uid }]);
-    setDirtyIds((previous) => {
-      const next = new Set(previous);
-      next.delete(getEntryIdentity(worldName, uid));
-      return next;
-    });
+    const submitted = structuredClone(entry);
+    setIsSaving(true);
+    try {
+      await onSaveEntries(worldName, [{ entry: submitted, originalUid: uid }]);
+      setDirtyIds((previous) => {
+        const current = draftEntriesRef.current[worldName]?.find((item) => item.uid === uid);
+        if (JSON.stringify(current) !== JSON.stringify(submitted)) return previous;
+        const next = new Set(previous);
+        next.delete(getEntryIdentity(worldName, uid));
+        return next;
+      });
+    } catch (error) {
+      st_echo('error', `Could not save entry: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleDeleteEntry = async (worldName: string, uid: number) => {
@@ -660,24 +699,52 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   };
 
   const handleSaveAll = async () => {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || isSaving) return;
+    setIsSaving(true);
     const affectedWorlds = new Set<string>();
     [...Array.from(dirtyIds), ...Array.from(deletedIds)].forEach((id) => {
       const [worldName] = id.split('::');
       if (worldName) affectedWorlds.add(worldName);
     });
 
+    let savedCount = 0;
     for (const worldName of affectedWorlds) {
       const entries = (draftEntries[worldName] ?? []).filter(
         (entry) => !deletedIds.has(getEntryIdentity(worldName, entry.uid)),
       );
-      await onReplaceWorldEntries(worldName, entries);
+      const submitted = structuredClone(entries);
+      try {
+        await onReplaceWorldEntries(worldName, submitted);
+        savedCount++;
+        // The baseline may have rendered before this promise resumes. Remove
+        // acknowledged deletions from drafts as well as their pending markers.
+        setDraftEntries((previous) => ({
+          ...previous,
+          [worldName]: (previous[worldName] ?? []).filter(
+            (entry) => !deletedIds.has(getEntryIdentity(worldName, entry.uid)),
+          ),
+        }));
+        setDirtyIds((previous) => {
+          const next = new Set(previous);
+          deletedIds.forEach((id) => {
+            if (id.startsWith(`${worldName}::`)) next.delete(id);
+          });
+          submitted.forEach((entry) => {
+            const current = draftEntriesRef.current[worldName]?.find((item) => item.uid === entry.uid);
+            if (JSON.stringify(current) === JSON.stringify(entry)) next.delete(getEntryIdentity(worldName, entry.uid));
+          });
+          return next;
+        });
+        setDeletedIds(
+          (previous) => new Set([...previous].filter((id) => !deletedIds.has(id) || !id.startsWith(`${worldName}::`))),
+        );
+      } catch (error) {
+        st_echo('error', `Could not save ${worldName}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
-    setDirtyIds(new Set());
-    setDeletedIds(new Set());
-    setSelectedIds(new Set());
-    st_echo('success', `Saved ${affectedWorlds.size} lorebook${affectedWorlds.size === 1 ? '' : 's'}.`);
+    if (savedCount) st_echo('success', `Saved ${savedCount} lorebook${savedCount === 1 ? '' : 's'}.`);
+    setIsSaving(false);
   };
 
   const handleBulkTitle = () => {
@@ -871,10 +938,10 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           <STButton className="menu_button" onClick={handleBackup}>
             Backup / Export
           </STButton>
-          <STButton className="menu_button" disabled={!hasUnsavedChanges} onClick={handleRevertAll}>
+          <STButton className="menu_button" disabled={!hasUnsavedChanges || isSaving} onClick={handleRevertAll}>
             Revert All
           </STButton>
-          <STButton className="menu_button" disabled={!hasUnsavedChanges} onClick={handleSaveAll}>
+          <STButton className="menu_button" disabled={!hasUnsavedChanges || isSaving} onClick={handleSaveAll}>
             Save All
           </STButton>
           <STButton
@@ -1050,6 +1117,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
                 viewMode={viewMode}
                 isSelected={selectedIds.has(getEntryIdentity(selectedWorldName, entry.uid))}
                 isDirty={dirtyIds.has(getEntryIdentity(selectedWorldName, entry.uid))}
+                isSaving={isSaving}
                 categoryId={activeAssignments[String(entry.uid)] ?? ''}
                 categories={activeCategories}
                 onToggleSelected={handleToggleSelected}

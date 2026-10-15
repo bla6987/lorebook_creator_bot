@@ -5,10 +5,9 @@ import { RegexScriptData } from 'sillytavern-utils-lib/types/regex';
 import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { CompareEntryPopup } from './CompareEntryPopup.js';
 import { EditEntryPopup, EditEntryPopupRef } from './EditEntryPopup.js';
-import { ReviseSessionManager } from './ReviseSessionManager.js';
+import { ReviseSessionManager, type EntryRevisionApplyArgs } from './ReviseSessionManager.js';
 import { Session } from '../generate.js';
 import { ExtensionSettings } from '../settings.js';
-import { ReviseState } from '../revise-types.js';
 import { ExtendedWIEntry } from '../types.js';
 import { getActivationMode, getChangedEntryFields, getPositionLabel, getRoleLabel } from './lorebookEditorUtils.js';
 
@@ -97,7 +96,11 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
 
   const handleAddClick = async () => {
     setIsAdding(true);
-    await onAdd(entry, initialWorldName, selectedWorld);
+    try {
+      await onAdd(entry, initialWorldName, selectedWorld);
+    } finally {
+      setIsAdding(false);
+    }
   };
 
   const handleContinueClick = async () => {
@@ -112,9 +115,14 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
     setIsRevising(false);
   };
 
-  const handleApplyReviseSession = (newState: ReviseState) => {
-    onUpdate(initialWorldName, entry, newState as ExtendedWIEntry, sessionRegexIds);
+  const handleApplyReviseSession = ({ updatedEntry }: EntryRevisionApplyArgs) => {
+    onUpdate(initialWorldName, entry, updatedEntry, sessionRegexIds);
   };
+
+  const renderedContent = useMemo(
+    () => SillyTavern.libs.DOMPurify.sanitize(converter.makeHtml(entry.content ?? '')),
+    [entry.content],
+  );
 
   return (
     <>
@@ -157,7 +165,7 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
             <span key={chip}>{chip}</span>
           ))}
         </div>
-        <p className="content" dangerouslySetInnerHTML={{ __html: converter.makeHtml(entry.content ?? '') }}></p>
+        <p className="content" dangerouslySetInnerHTML={{ __html: renderedContent }}></p>
         <div className="entry-target-row">
           <label>
             Target Lorebook

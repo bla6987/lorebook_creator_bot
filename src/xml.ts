@@ -1,8 +1,9 @@
 import { getEntryKeys } from './components/lorebookEditorUtils.js';
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { ExtendedWIEntry } from './types.js';
+import { escapeXmlText } from './xml-utils.js';
 
-const parser = new XMLParser();
+const parser = new XMLParser({ parseTagValue: false });
 
 function createRandomNumber(length: number): number {
   const min = Math.pow(10, length - 1);
@@ -37,7 +38,7 @@ const parseStringField = (value: unknown): string => {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return '';
+  throw new Error('Expected an XML text field. Escape embedded markup or wrap it in CDATA.');
 };
 
 const buildOptionalXmlFields = (entry: ExtendedWIEntry) => {
@@ -55,17 +56,25 @@ export function parseXMLOwn(xml: string, options: XmlParseOptions = {}): Record<
   let processedXml = xml;
   const { previousContent } = options;
 
-  // Remove code blocks
-  processedXml = processedXml.replace(/```xml/g, '').replace(/```/g, '');
+  const reasoningPreamble = /^\s*<(think(?:ing)?|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>\s*/i;
+  if (!previousContent) {
+    while (reasoningPreamble.test(processedXml)) {
+      processedXml = processedXml.replace(reasoningPreamble, '');
+    }
+  }
 
-  // Strip reasoning/thinking blocks emitted by some models (e.g. DeepSeek R1, QwQ)
-  // before they produce the actual XML answer.
-  processedXml = processedXml.replace(/<think(?:ing)?[^>]*>[\s\S]*?<\/think(?:ing)?>/gi, '');
-  processedXml = processedXml.replace(/<reasoning[^>]*>[\s\S]*?<\/reasoning>/gi, '');
+  // Unwrap an enclosing response fence without changing fences inside lore text.
+  processedXml = processedXml.replace(/^\s*```(?:xml)?[ \t]*\r?\n([\s\S]*?)\r?\n?```\s*$/i, '$1');
 
   // Merge with previous content if exists
   if (previousContent) {
     processedXml = previousContent + processedXml.trimEnd();
+  }
+
+  // Only discard reasoning before the document. Tags inside XML text/CDATA
+  // belong to the lore and must survive unchanged, including during continuation.
+  while (reasoningPreamble.test(processedXml)) {
+    processedXml = processedXml.replace(reasoningPreamble, '');
   }
 
   // Extract just the <lorebooks> region, ignoring any surrounding prose.
@@ -76,12 +85,9 @@ export function parseXMLOwn(xml: string, options: XmlParseOptions = {}): Record<
     processedXml = lorebooksRegion[0];
   }
 
-  // Ensure XML is complete by checking for imbalanced tags
-  if (processedXml.includes('<entry>') && !processedXml.includes('</entry>')) {
-    throw new Error('Incomplete XML: Missing </entry> tag');
-  }
-  if (processedXml.includes('<content>') && !processedXml.includes('</content>')) {
-    throw new Error('Incomplete XML: Missing </content> tag');
+  const validation = XMLValidator.validate(processedXml);
+  if (validation !== true) {
+    throw new Error(`Model response is not valid XML: ${validation.err.msg}`);
   }
 
   const entriesByWorldName: Record<string, ExtendedWIEntry[]> = {};
@@ -146,22 +152,22 @@ export function getPrefilledXML(worldName: string, entry: ExtendedWIEntry): stri
   return `
 <lorebooks>
   <entry>
-    <worldName>${worldName}</worldName>
+    <worldName>${escapeXmlText(worldName)}</worldName>
     <id>${entry.uid}</id>
-    <name>${entry.comment}</name>
-    <triggers>${getEntryKeys(entry).join(',')}</triggers>
-${buildOptionalXmlFields(entry)}    <content>${entry.content}`;
+    <name>${escapeXmlText(entry.comment)}</name>
+    <triggers>${escapeXmlText(getEntryKeys(entry).join(','))}</triggers>
+${buildOptionalXmlFields(entry)}    <content>${escapeXmlText(entry.content)}`;
 }
 
 export function getFullXML(worldName: string, entry: ExtendedWIEntry): string {
   return `
 <lorebooks>
   <entry>
-    <worldName>${worldName}</worldName>
+    <worldName>${escapeXmlText(worldName)}</worldName>
     <id>${entry.uid}</id>
-    <name>${entry.comment}</name>
-    <triggers>${getEntryKeys(entry).join(',')}</triggers>
-${buildOptionalXmlFields(entry)}    <content>${entry.content}</content>
+    <name>${escapeXmlText(entry.comment)}</name>
+    <triggers>${escapeXmlText(getEntryKeys(entry).join(','))}</triggers>
+${buildOptionalXmlFields(entry)}    <content>${escapeXmlText(entry.content)}</content>
   </entry>
 </lorebooks>`;
 }

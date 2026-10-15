@@ -7,6 +7,7 @@ import * as Handlebars from 'handlebars';
 import { schemaToExample } from './schema-to-example.js';
 import { parseResponse } from './parsers.js';
 import { withRuntimeConnectionProfile } from './api-settings.js';
+import { normalizeNativeResponse, toNativeResponseSchema } from './native-response-schema.js';
 
 const generator = new Generator();
 
@@ -109,7 +110,7 @@ export async function makeStructuredRequest<T extends z.ZodType<any, any, any>>(
       baseMessages,
       maxResponseToken,
       {
-        json_schema: { name: schemaName, strict: true, value: jsonSchema },
+        json_schema: { name: schemaName, strict: true, value: toNativeResponseSchema(jsonSchema) },
       },
       undefined,
       signal,
@@ -118,6 +119,7 @@ export async function makeStructuredRequest<T extends z.ZodType<any, any, any>>(
       throw new Error(`Structured request for ${schemaName} failed to return content.`);
     }
     parsedContent = typeof response.content === 'string' ? JSON.parse(response.content) : response.content;
+    parsedContent = normalizeNativeResponse(parsedContent, jsonSchema);
   } else {
     // Manual prompt engineering for JSON or XML
     const format = promptEngineeringMode as 'json' | 'xml';

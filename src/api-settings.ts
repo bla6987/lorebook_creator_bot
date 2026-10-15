@@ -166,6 +166,25 @@ export async function createConnectionProfileFromDraft(
     throw new Error(`Could not find the ${presetApiId} preset manager.`);
   }
 
+  // Use the same server-side sanitizer as /api/presets/save before checking
+  // collisions. Otherwise a name like A/B can overwrite the existing preset AB.
+  const sanitizedResponse = await fetch('/api/files/sanitize-filename', {
+    method: 'POST',
+    headers: context.getRequestHeaders(),
+    body: JSON.stringify({ fileName: trimmedName }),
+  });
+  if (!sanitizedResponse.ok) {
+    throw new Error('Could not validate the preset filename. No profile or preset was saved.');
+  }
+  const sanitized = await sanitizedResponse.json();
+  if (sanitized.fileName !== trimmedName) {
+    throw new Error('Profile name is not a valid preset filename. Choose another name.');
+  }
+
+  if (presetManager.getCompletionPresetByName(trimmedName) !== undefined) {
+    throw new Error(`A preset named "${trimmedName}" already exists. Choose another profile name.`);
+  }
+
   await presetManager.savePreset(trimmedName, clone(draftPreset));
 
   const newProfile: ConnectionProfile = {

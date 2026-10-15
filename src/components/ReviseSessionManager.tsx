@@ -1,4 +1,4 @@
-import { FC, useState, useEffect, useMemo, useRef } from 'react';
+import { FC, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { ReviseSession, ReviseState } from '../revise-types.js';
 import { STButton } from 'sillytavern-utils-lib/components/react';
@@ -9,21 +9,29 @@ import { st_echo, selected_group, this_chid } from 'sillytavern-utils-lib/config
 import { BuildPromptOptions } from 'sillytavern-utils-lib';
 import { Session } from '../generate.js';
 import { getRuntimeConnectionProfile } from '../api-settings.js';
-import { loadReviseSessions, saveReviseSessions } from '../revise-session-storage.js';
+import { getReviseEntryIdentifier, loadReviseSessions, saveReviseSessions } from '../revise-session-storage.js';
 
 const globalContext = SillyTavern.getContext();
 
-interface ReviseSessionManagerProps {
-  target: { type: 'global' } | { type: 'entry'; worldName: string; entry: WIEntry };
+export interface EntryRevisionApplyArgs {
+  type: 'entry';
+  worldName: string;
+  originalEntry: WIEntry;
+  updatedEntry: WIEntry;
+}
+
+interface SharedReviseSessionManagerProps {
   initialState: ReviseState;
   onClose: () => void;
-  onApply:
-    | ((newState: Record<string, WIEntry[]>) => void)
-    | ((args: { worldName: string; originalEntry: WIEntry; updatedEntry: WIEntry }) => void);
   sessionForContext: Session;
   allEntries: Record<string, WIEntry[]>;
   contextToSend: ExtensionSettings['contextToSend'];
 }
+
+type ReviseSessionManagerProps = SharedReviseSessionManagerProps & (
+  | { target: { type: 'global' }; onApply: (newState: Record<string, WIEntry[]>) => void }
+  | { target: { type: 'entry'; worldName: string; entry: WIEntry }; onApply: (args: EntryRevisionApplyArgs) => void }
+);
 
 export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   target,
@@ -38,19 +46,29 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   const [activeSession, setActiveSession] = useState<ReviseSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const historyWritable = useRef(false);
+  const mountedRef = useRef(false);
+  const sessionsRef = useRef<ReviseSession[]>([]);
+  const activeSessionIdRef = useRef<string | null>(null);
+
+  const selectSession = (session: ReviseSession | null) => {
+    activeSessionIdRef.current = session?.id ?? null;
+    setActiveSession(session);
+  };
 
   const targetIdentifier = useMemo(() => {
     if (target.type === 'entry') {
-      return `${target.worldName}::${target.entry.uid}::${target.entry.comment}`;
+      return getReviseEntryIdentifier(target.worldName, target.entry.uid);
     }
     return 'global';
   }, [target]);
 
   useEffect(() => {
+    mountedRef.current = true;
     let mounted = true;
     void loadReviseSessions().then((result) => {
       if (!mounted) return;
       historyWritable.current = result.writable;
+      sessionsRef.current = result.value;
       setAllSessions(result.value);
       if (result.error) {
         console.warn('Revision history storage:', result.error);
@@ -60,7 +78,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
       }
       setIsLoading(false);
     });
-    return () => { mounted = false; historyWritable.current = false; };
+    return () => { mounted = false; mountedRef.current = false; historyWritable.current = false; };
   }, []);
 
   const filteredSessions = useMemo(() => {
@@ -74,7 +92,10 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [allSessions, target.type, targetIdentifier]);
 
-  const saveAllSessions = (updatedSessions: ReviseSession[]) => {
+  const saveAllSessions = useCallback((update: (current: ReviseSession[]) => ReviseSession[]) => {
+    if (!mountedRef.current) return;
+    const updatedSessions = update(sessionsRef.current);
+    sessionsRef.current = updatedSessions;
     setAllSessions(updatedSessions);
     if (!historyWritable.current) {
       st_echo('warning', 'Revision history has not been saved. Reopen this popup after browser storage is available.');
@@ -86,7 +107,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
         st_echo('warning', 'Revision history could not be saved. Keep this popup open and check browser storage.');
       }
     });
-  };
+  }, []);
 
   const handleCreateNewSession = async () => {
     const name = await globalContext.Popup.show.input(
@@ -128,7 +149,9 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
         isReadonly: false,
       };
 
-      setActiveSession(newSession);
+      if (!mountedRef.current) return;
+      saveAllSessions((current) => [...current, newSession]);
+      selectSession(newSession);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Failed to create session:', error);
@@ -137,32 +160,28 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   };
 
   const handleSelectSession = (session: ReviseSession) => {
-    setActiveSession(session);
+    selectSession(session);
   };
 
   const handleDeleteSession = async (sessionId: string) => {
     const confirm = await globalContext.Popup.show.confirm('Delete Session', 'Are you sure? This cannot be undone.');
     if (confirm) {
-      const updatedSessions = allSessions.filter((s) => s.id !== sessionId);
-      saveAllSessions(updatedSessions);
+      saveAllSessions((current) => current.filter((s) => s.id !== sessionId));
     }
   };
 
-  const handleSessionUpdate = (updatedSession: ReviseSession) => {
-    const index = allSessions.findIndex((s) => s.id === updatedSession.id);
-    const newAllSessions = [...allSessions];
-    if (index !== -1) {
-      newAllSessions[index] = updatedSession;
-    } else {
-      newAllSessions.push(updatedSession);
+  const handleSessionUpdate = useCallback((sessionId: string, changes: Partial<ReviseSession>) => {
+    saveAllSessions((current) => current.map((saved) => saved.id === sessionId ? { ...saved, ...changes } : saved));
+    // Completing a request for a departed session must never navigate back to it.
+    if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+      setActiveSession((current) => current?.id === sessionId ? { ...current, ...changes } : current);
     }
-    saveAllSessions(newAllSessions);
-    setActiveSession(updatedSession);
-  };
+  }, [saveAllSessions]);
 
   const handleApplyAndClose = (newState: ReviseState) => {
     if (target.type === 'entry') {
-      (onApply as (args: { worldName: string; originalEntry: WIEntry; updatedEntry: WIEntry }) => void)({
+      (onApply as (args: EntryRevisionApplyArgs) => void)({
+        type: 'entry',
         worldName: target.worldName,
         originalEntry: initialState as WIEntry,
         updatedEntry: newState as WIEntry,
@@ -224,8 +243,9 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
 
     return (
       <ReviseSessionChat
+        key={activeSession.id}
         session={activeSession}
-        onBack={() => setActiveSession(null)}
+        onBack={() => selectSession(null)}
         onApply={handleApplyAndClose}
         onSessionUpdate={handleSessionUpdate}
         initialState={initialState}
@@ -265,7 +285,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
         )}
       </div>
       <div className="session-actions">
-        <STButton onClick={handleCreateNewSession} className="menu_button">
+        <STButton onClick={handleCreateNewSession} disabled={isLoading} className="menu_button">
           <i className="fa-solid fa-plus"></i> New Session
         </STButton>
       </div>

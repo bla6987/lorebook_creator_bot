@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { loadMainSession, saveMainSession, getMainSessionKey } from '../main-session-storage.js';
-import { loadReviseSessions, saveReviseSessions, REVISE_SESSIONS_KEY } from '../revise-session-storage.js';
+import { loadReviseSessions, saveReviseSessions, REVISE_SESSIONS_KEY, getReviseEntryIdentifier } from '../revise-session-storage.js';
 import type { SessionStorage } from '../session-storage.js';
 import type { Session } from '../generate.js';
 import type { ReviseSession } from '../revise-types.js';
@@ -118,4 +118,26 @@ describe('session migration', () => {
     db.failWrite = false; expect((await saveReviseSessions([], db)).persisted).toBe(true);
     expect((await loadReviseSessions(db, new Legacy())).value).toEqual([]);
   });
+});
+
+
+test('legacy revision target identity migrates by world and UID while preserving snapshots and settings', async () => {
+  const db = new Database(), legacy = new Legacy();
+  const prior = { ...revision(), worldName: 'Book::Section', targetEntryIdentifier: 'Book::Section::0::Old::Title' };
+  legacy.items.set(REVISE_SESSIONS_KEY, JSON.stringify([prior]));
+  const expected = { ...prior, targetEntryIdentifier: getReviseEntryIdentifier('Book::Section', 0) };
+  const loaded = await loadReviseSessions(db, legacy);
+  expect(loaded.value).toEqual([expected]);
+  expect(db.items.get(REVISE_SESSIONS_KEY)).toEqual([expected]);
+  expect(legacy.getItem(REVISE_SESSIONS_KEY)).toBeNull();
+});
+
+test('existing IndexedDB revision identities normalize without changing unrelated data', async () => {
+  const db = new Database();
+  const prior = { ...revision(), worldName: 'Book' };
+  db.items.set(REVISE_SESSIONS_KEY, [prior]);
+  const loaded = await loadReviseSessions(db, new Legacy());
+  expect(loaded.value).toEqual([{ ...prior, targetEntryIdentifier: getReviseEntryIdentifier('Book', 1) }]);
+  await saveReviseSessions(loaded.value, db);
+  expect((await loadReviseSessions(db, new Legacy())).value).toEqual(loaded.value);
 });

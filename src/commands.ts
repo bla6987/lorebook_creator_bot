@@ -12,6 +12,7 @@ import {
   Session,
 } from './generate.js';
 import { ContextToSend, settingsManager } from './settings.js';
+import { saveWorldInfoChecked } from './world-info-save.js';
 
 export function initializeCommands() {
   /**
@@ -298,9 +299,9 @@ export function initializeCommands() {
 
           // Prepare ContextToSend based on args or fallback to settings
           const parsedContextToSend = parseList(namedArgs.context as string | undefined);
-          const contextToSend: ContextToSend = { ...settings.contextToSend }; // Start with defaults
+          const contextToSend: ContextToSend = structuredClone(settings.contextToSend); // Isolate per-command overrides
           if (parsedContextToSend !== null) {
-            const contextArgs = parsedContextToSend.map((s) => s.trim());
+            const contextArgs = parsedContextToSend.map((s) => s.trim().toLowerCase());
             contextToSend.stDescription = contextArgs.includes('stdescription');
             contextToSend.messages.type = contextArgs.includes('messages') ? contextToSend.messages.type : 'none'; // Keep type if messages included, else none
             contextToSend.charCard = contextArgs.includes('charcard');
@@ -310,7 +311,7 @@ export function initializeCommands() {
             contextToSend.suggestedEntries = false;
           }
           // Override message range if specified
-          if (namedArgs.messages && contextToSend.messages.type !== 'none') {
+          if (namedArgs.messages) {
             const msgArg = (namedArgs.messages as string).toLowerCase().trim();
             if (msgArg === 'all') contextToSend.messages.type = 'all';
             else if (msgArg === 'none') contextToSend.messages.type = 'none';
@@ -480,12 +481,11 @@ export function initializeCommands() {
             }
 
             for (const entry of entries) {
-              const isExisting = workingWorldInfo[targetWorldName]?.some(
-                (e) => e.uid === entry.uid && e.comment === entry.comment,
-              );
+              // Match the same world/UID identity used by prepareEntryModification.
+              const existingEntry = workingWorldInfo[targetWorldName]?.find((e) => e.uid === entry.uid);
 
               // Apply filters
-              if (isExisting) {
+              if (existingEntry) {
                 if (!allowUpdate) {
                   if (!silent)
                     st_echo(
@@ -496,7 +496,10 @@ export function initializeCommands() {
                   continue;
                 }
                 if (limitUpdates) {
-                  const commentIdentifier = `${targetWorldName}.${entry.comment}`;
+                  // Titles can be changed by suggestions, but authorization belongs to the original entry.
+                  const originalEntry =
+                    allWorldInfo[targetWorldName]?.find((e) => e.uid === entry.uid) ?? existingEntry;
+                  const commentIdentifier = `${targetWorldName}.${originalEntry.comment}`;
                   const uidIdentifier = `${targetWorldName}.${entry.uid}`;
                   if (!editableEntriesSet.has(commentIdentifier) && !editableEntriesSet.has(uidIdentifier)) {
                     if (!silent)
@@ -544,7 +547,7 @@ export function initializeCommands() {
               const worldDataToSave = workingWorldInfo[worldNameToSave];
               const stFormat: { entries: Record<number, WIEntry> } = { entries: {} };
               worldDataToSave.forEach((e) => (stFormat.entries[e.uid] = e));
-              await globalContext.saveWorldInfo(worldNameToSave, stFormat);
+              await saveWorldInfoChecked(worldNameToSave, stFormat);
               globalContext.reloadWorldInfoEditor(worldNameToSave, true); // Update editor UI if open
             }
           }

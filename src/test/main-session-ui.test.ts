@@ -29,6 +29,7 @@ beforeAll(() => {
     '../settings.js': { settingsManager: { getSettings: () => state.settings } },
     '../generate.js': { buildRecommendationMessages: vi.fn(), runWorldInfoRecommendation: vi.fn() },
     '../api-settings.js': { getRuntimeConnectionProfile: vi.fn() },
+    '../world-info-save.js': { saveWorldInfoChecked: vi.fn() },
     '../hooks/useForceUpdate.js': { useForceUpdate }, './lorebookEditorUtils.js': editorUtils,
     'sillytavern-utils-lib': { getWorldInfos: async () => ({}) },
     'sillytavern-utils-lib/types/popup': { POPUP_TYPE: {} },

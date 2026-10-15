@@ -147,7 +147,7 @@ interface ReviseSessionChatProps {
   session: ReviseSession;
   onBack: () => void;
   onApply: (newState: ReviseState) => void;
-  onSessionUpdate: (updatedSession: ReviseSession) => void;
+  onSessionUpdate: (sessionId: string, changes: Partial<ReviseSession>) => void;
   initialState: ReviseState;
   chatContextOptions: BuildPromptOptions;
 }
@@ -170,6 +170,18 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
   const [editingContent, setEditingContent] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const requestVersionRef = useRef(0);
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      ++requestVersionRef.current;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -285,6 +297,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
       optimisticUpdate: () => void,
       revertUpdate: () => void,
     ) => {
+      if (abortControllerRef.current || !mountedRef.current) return;
       const settings = settingsManager.getSettings();
       const activeProfileId = settings.profileId;
       if (!activeProfileId) {
@@ -305,7 +318,11 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
         syspromptName: profile.sysprompt,
       };
 
-      abortControllerRef.current = new AbortController();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const requestVersion = ++requestVersionRef.current;
+      const isCurrentRequest = () => mountedRef.current && requestVersionRef.current === requestVersion;
+      const canCommit = () => isCurrentRequest() && !controller.signal.aborted;
 
       optimisticUpdate();
       setIsLoading(true);
@@ -316,6 +333,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           if (message.id === CHAT_HISTORY_PLACEHOLDER_ID) {
             if (this_chid === undefined && !selected_group) continue;
             const prompt = await buildPrompt(selectedApi, effectiveChatContextOptions);
+            if (!canCommit()) return;
             if (prompt.warnings?.length) prompt.warnings.forEach((w) => st_echo('warning', w));
             finalMessagesForRequest.push(...(prompt.result as ReviseMessage[]));
           } else {
@@ -366,11 +384,12 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           });
           const responseContent = await makePlainRequest(
             activeProfileId,
-            finalMessagesForRequest,
+            finalMessagesForRequest.map(({ role, content }) => ({ role, content })),
             settings.maxResponseToken,
-            abortControllerRef.current.signal,
+            controller.signal,
           );
 
+          if (!canCommit()) return;
           const assistantMessage: ReviseMessage = {
             id: `msg-${Date.now()}-ai`,
             role: 'assistant',
@@ -379,7 +398,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
 
           const finalMessages = [...messagesToSend, assistantMessage];
           setMessages(finalMessages);
-          onSessionUpdate({ ...session, profileId: activeProfileId, messages: finalMessages });
+          onSessionUpdate(session.id, { profileId: activeProfileId, messages: finalMessages });
         } else {
           let newSnapshot: ReviseState;
           let justification: string;
@@ -387,30 +406,33 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           if (session.type === 'entry') {
             const response = await makeStructuredRequest(
               activeProfileId,
-              finalMessagesForRequest,
+              finalMessagesForRequest.map(({ role, content }) => ({ role, content })),
               EntryRevisionResponseSchema,
               REVISE_SCHEMA_NAME.ENTRY,
               session.promptEngineeringMode,
               settings.maxResponseToken,
-              abortControllerRef.current.signal,
+              controller.signal,
             );
+            if (!canCommit()) return;
             newSnapshot = calculateNewState(lastState as WIEntry, response);
             justification = response.justification;
           } else {
             // 'global'
             const response = await makeStructuredRequest(
               activeProfileId,
-              finalMessagesForRequest,
+              finalMessagesForRequest.map(({ role, content }) => ({ role, content })),
               GlobalRevisionResponseSchema,
               REVISE_SCHEMA_NAME.GLOBAL,
               session.promptEngineeringMode,
               settings.maxResponseToken,
-              abortControllerRef.current.signal,
+              controller.signal,
             );
+            if (!canCommit()) return;
             newSnapshot = calculateNewGlobalState(lastState as Record<string, WIEntry[]>, response);
             justification = response.justification;
           }
 
+          if (!canCommit()) return;
           const assistantMessage: ReviseMessage = {
             id: `msg-${Date.now()}-ai`,
             role: 'assistant',
@@ -422,9 +444,10 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           finalMessages = createAndAddStateUpdateMessage(finalMessages, newSnapshot, lastState);
 
           setMessages(finalMessages);
-          onSessionUpdate({ ...session, profileId: activeProfileId, messages: finalMessages });
+          onSessionUpdate(session.id, { profileId: activeProfileId, messages: finalMessages });
         }
       } catch (error: any) {
+        if (!isCurrentRequest()) return;
         if (error.name === 'AbortError') {
           st_echo('info', 'Request was cancelled.');
         } else {
@@ -433,8 +456,11 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
         }
         revertUpdate();
       } finally {
-        setIsLoading(false);
-        abortControllerRef.current = null;
+        if (isCurrentRequest()) {
+          if (controller.signal.aborted) revertUpdate();
+          setIsLoading(false);
+          abortControllerRef.current = null;
+        }
       }
     },
     [session, onSessionUpdate, initialState, chatContextOptions, createAndAddStateUpdateMessage],
@@ -566,11 +592,12 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
       : messages.slice(0, messageIndex);
 
     setMessages(newMessages);
-    onSessionUpdate({ ...session, messages: newMessages });
+    onSessionUpdate(session.id, { messages: newMessages });
     st_echo('info', 'Message history has been updated.');
   };
 
   const handleSaveStateEdit = (newState: ReviseState) => {
+    if (abortControllerRef.current) return;
     const userEditMessage: ReviseMessage = {
       id: `msg-${Date.now()}-user-edit`,
       role: 'user',
@@ -582,7 +609,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
     finalMessages = createAndAddStateUpdateMessage(finalMessages, newState, currentState);
 
     setMessages(finalMessages);
-    onSessionUpdate({ ...session, messages: finalMessages });
+    onSessionUpdate(session.id, { messages: finalMessages });
     setIsEditingState(false);
   };
 
@@ -600,7 +627,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             <input
               type="checkbox"
               checked={session.isReadonly ?? false}
-              onChange={(e) => onSessionUpdate({ ...session, isReadonly: e.target.checked })}
+              onChange={(e) => onSessionUpdate(session.id, { isReadonly: e.target.checked })}
             />
             Readonly Mode
           </label>
@@ -614,7 +641,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             className="text_pole"
             value={session.promptEngineeringMode}
             onChange={(e) =>
-              onSessionUpdate({ ...session, promptEngineeringMode: e.target.value as PromptEngineeringMode })
+              onSessionUpdate(session.id, { promptEngineeringMode: e.target.value as PromptEngineeringMode })
             }
             title="Prompt Engineering Mode"
             disabled={session.isReadonly}
@@ -628,7 +655,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             View State
           </STButton>
           {session.type === 'entry' && (
-            <STButton onClick={() => setIsEditingState(true)} title="Manually edit the current state">
+            <STButton onClick={() => setIsEditingState(true)} disabled={isLoading} title="Manually edit the current state">
               Edit State
             </STButton>
           )}

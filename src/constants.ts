@@ -130,6 +130,7 @@ Your entire response MUST be a single \`<lorebooks>\` XML block and nothing else
 3. Every \`<entry>\` MUST contain \`<worldName>\`, \`<name>\`, \`<triggers>\`, and \`<content>\` in that order. Include \`<id>\` ONLY when updating an existing entry.
 4. \`<triggers>\` is a comma-separated list of keywords.
 5. If you have nothing to add, return \`<lorebooks></lorebooks>\` — still no prose.
+6. Preserve literal markup and special characters in text fields by XML-escaping them (for example, \`&lt;b&gt;\` and \`&amp;\`) or using CDATA. Do not put nested XML elements inside text fields.
 
 **Creating a new entry:**
 <lorebooks>
@@ -184,6 +185,7 @@ export const DEFAULT_REVISE_XML_PROMPT = `You are a highly specialized AI assist
 1.  You MUST wrap the entire XML object in a markdown code block (\`\`\`xml\\n...\\n\`\`\`).
 2.  Your response MUST NOT contain any explanatory text, comments, or any other content outside of this single code block.
 3.  The XML object inside the code block MUST be valid.
+4.  Preserve literal markup and special characters in text fields by XML-escaping them or using CDATA. Array items use the \`<item>\` wrappers shown in the example.
 
 **EXAMPLE OF A PERFECT RESPONSE:**
 \`\`\`xml

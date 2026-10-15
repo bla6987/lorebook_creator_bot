@@ -62,3 +62,9 @@ Gemini models are cheap, fast, and efficient. I usually use Gemini Flash 2.0. Bu
 Main recommendation sessions and revision histories now use SillyTavern's IndexedDB-backed storage. Existing browser-local histories migrate when opened; the old copy is removed only after the new write succeeds. A failed migration keeps and loads the old history. Failed reads or invalid data preserve the original and block history writes until the popup is reopened successfully. Storage errors are shown instead of silently resetting history. Histories remain browser-local, not synced between devices.
 
 The custom API settings, prompt preview, mobile layout, extended lorebook fields, batch saving and branch-specific lorebooks are retained. Missing trigger lists are normalized in revision and prompt-preview paths. These changes selectively adapt upstream session-storage and keyword fixes without replacing the custom editor or Apply All logic.
+
+## Reliability fixes in 0.2.2
+
+Lorebook saves now use immediate writes and verify the server's saved data. Failed saves keep suggestions and editor drafts available for retry; saving one entry preserves other edits and pending deletions. Revision history survives entry renames, and leaving a revision chat cancels its request so a late response cannot overwrite newer work.
+
+This update also sanitizes suggestion HTML, fixes cross-lorebook revision identities, hardens XML and native structured responses, protects existing presets, and removes local history snapshots from outgoing requests. The [21-issue fix and verification checklist](docs/2026-10-14-audit-fixes.md) records the implementation and regression coverage.

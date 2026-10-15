@@ -197,14 +197,15 @@ export async function runWorldInfoRecommendation({
 
   // console.log("Received content:", response.content);
 
-  const assistantMessageForContinue = messages.find((m) => m.role === 'assistant');
   if (!response.content) {
     throw new Error('AI returned an empty response. Check your connection profile, model, and console for details.');
   }
   let parsedEntries = parseXMLOwn(response.content, {
     // Only merge with previous content if we are in 'continue' mode.
     previousContent:
-      continueFrom && continueFrom.mode === 'continue' ? assistantMessageForContinue?.content : undefined,
+      continueFrom && continueFrom.mode === 'continue'
+        ? getPrefilledXML(continueFrom.worldName, continueFrom.entry)
+        : undefined,
   });
 
   if (Object.keys(parsedEntries).length === 0) {

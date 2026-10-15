@@ -47,6 +47,7 @@ import {
 } from './lorebookEditorUtils.js';
 import { WorldInfoRecommenderSettings } from './Settings.js';
 import { loadMainSession, saveMainSession } from '../main-session-storage.js';
+import { saveWorldInfoChecked } from '../world-info-save.js';
 
 if (!Handlebars.helpers['join']) {
   Handlebars.registerHelper('join', function (array: any, separator: any) {
@@ -195,9 +196,12 @@ export const MainPopup: FC = () => {
     const savedSession = loaded.value;
     if (loaded.error) {
       console.warn('Could not fully load/migrate World Info Recommender history:', loaded.error);
-      st_echo('warning', loaded.writable
-        ? 'Saved history was loaded from the original storage, but could not be migrated. The original has been kept.'
-        : 'History storage could not be read safely. The original data has been kept; reopen this popup before saving history.');
+      st_echo(
+        'warning',
+        loaded.writable
+          ? 'Saved history was loaded from the original storage, but could not be migrated. The original has been kept.'
+          : 'History storage could not be read safely. The original data has been kept; reopen this popup before saving history.',
+      );
     }
     const initialSession: Session = {
       suggestedEntries: normalizeEntriesByWorld(savedSession.suggestedEntries ?? {}),
@@ -278,7 +282,10 @@ export const MainPopup: FC = () => {
 
   useEffect(() => {
     void loadData();
-    return () => { ++loadVersionRef.current; loadedSessionRef.current = null; };
+    return () => {
+      ++loadVersionRef.current;
+      loadedSessionRef.current = null;
+    };
   }, [loadData]);
 
   useEffect(() => {
@@ -461,7 +468,7 @@ export const MainPopup: FC = () => {
         st_echo('error', `Could not load "${sourceBook}" to fork a branch lorebook.`);
         return null;
       }
-      await globalContext.saveWorldInfo(worldName, { entries: data.entries }, true);
+      await saveWorldInfoChecked(worldName, { entries: data.entries });
       await context.updateWorldInfoList();
       if (!world_names.includes(worldName)) {
         st_echo('error', 'Failed to create the branch lorebook.');
@@ -525,7 +532,7 @@ export const MainPopup: FC = () => {
       ) {
         const forked = await forkChatLorebookForBranch(boundBook as string, chatId as string);
         if (forked) return { worldName: forked.name, baseEntries: forked.baseEntries };
-        // fall through to default behavior on failure
+        return { worldName: null };
       }
 
       // 3. Default: reuse or create the chat lorebook.
@@ -553,13 +560,15 @@ export const MainPopup: FC = () => {
         return 'unchanged'; // Nothing to do.
       }
 
-      setEntriesGroupByWorldName(worldInfoCopy);
-
       if (!skipSave) {
-        await globalContext.saveWorldInfo(selectedWorldName, toWorldInfoSaveFormat(worldInfoCopy[selectedWorldName]));
+        await saveWorldInfoChecked(selectedWorldName, toWorldInfoSaveFormat(worldInfoCopy[selectedWorldName]));
         globalContext.reloadWorldInfoEditor(selectedWorldName, true);
       }
 
+      setEntriesGroupByWorldName((previous) => ({
+        ...previous,
+        [selectedWorldName]: worldInfoCopy[selectedWorldName],
+      }));
       return status;
     },
     [entriesGroupByWorldName],
@@ -771,99 +780,98 @@ export const MainPopup: FC = () => {
   const handleAddAll = async () => {
     const totalEntries = Object.values(session.suggestedEntries).flat().length;
     if (totalEntries === 0) return st_echo('warning', 'No entries to add.');
-
-    const confirm = await globalContext.Popup.show.confirm(
+    const confirmed = await globalContext.Popup.show.confirm(
       'Apply All Suggestions',
       `Apply all ${totalEntries} suggested entries? Existing UIDs will be updated; unmatched suggestions will be added as new entries.`,
     );
-    if (!confirm) return;
+    if (!confirmed) return;
 
     setIsGenerating(true);
-    let addedCount = 0;
-    let updatedCount = 0;
-    let unchangedCount = 0;
-    const modifiedWorlds = new Set<string>();
-    const entriesToAdd: { worldName: string; entry: ExtendedWIEntry }[] = [];
-
-    // Apply All can touch several worlds, but rarely all of them. Shallow-copy the map and
-    // deep-clone each world's array lazily on first write so untouched worlds aren't cloned.
-    const workingEntries: Record<string, ExtendedWIEntry[]> = { ...entriesGroupByWorldName };
-    const writableWorlds = new Set<string>();
-    const ensureWritableWorld = (name: string) => {
-      if (!writableWorlds.has(name)) {
-        workingEntries[name] = structuredClone(workingEntries[name] ?? []);
-        writableWorlds.add(name);
-      }
-      return workingEntries[name];
-    };
-
-    // Anything not aimed at an explicit, valid, non-chat-book target is routed to
-    // the chat lorebook — which is created, reused, or (in a branch) forked from the
-    // inherited book exactly once. The inherited book is captured before resolving
-    // because forking rebinds the chat away from it.
-    const inheritedBook = getChatContext().chatMetadata?.[WI_METADATA_KEY];
-    const isExplicitOther = (selected: string) => allWorldNames.includes(selected) && selected !== inheritedBook;
-
-    const needsChatTarget = Object.entries(session.suggestedEntries).some(([worldName, entries]) =>
-      entries.some((entry) => {
-        const selected = suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName;
-        return !isExplicitOther(selected);
-      }),
-    );
-
-    let chatTargetWorld = '';
-    if (needsChatTarget) {
-      const resolved = await resolveTargetForAdd('');
-      if (!resolved.worldName) {
-        setIsGenerating(false);
-        return;
-      }
-      chatTargetWorld = resolved.worldName;
-      // Seed a freshly-forked copy so the save preserves the copied entries; existing
-      // worlds are cloned on first write by ensureWritableWorld.
-      if (resolved.baseEntries && !workingEntries[chatTargetWorld]) {
-        workingEntries[chatTargetWorld] = structuredClone(resolved.baseEntries);
-        writableWorlds.add(chatTargetWorld);
-      }
-    }
-
-    Object.entries(session.suggestedEntries).forEach(([worldName, entries]) => {
-      entries.forEach((entry) => {
-        const selected = suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName;
-        const targetWorldName = isExplicitOther(selected) ? selected : chatTargetWorld;
-        if (targetWorldName) entriesToAdd.push({ worldName: targetWorldName, entry });
-      });
-    });
-
-    for (const { worldName, entry } of entriesToAdd) {
-      try {
-        const status = applyEntryToWorld(ensureWritableWorld(worldName), worldName, entry);
-        if (status === 'unchanged') {
-          unchangedCount++;
-          continue;
+    try {
+      const workingEntries = { ...entriesGroupByWorldName };
+      const writableWorlds = new Set<string>();
+      const completed = new Set<ExtendedWIEntry>();
+      const persistedWorlds: Record<string, ExtendedWIEntry[]> = {};
+      const pendingByWorld = new Map<string, { entry: ExtendedWIEntry; status: 'added' | 'updated' | 'unchanged' }[]>();
+      let addedCount = 0;
+      let updatedCount = 0;
+      let unchangedCount = 0;
+      const inheritedBook = getChatContext().chatMetadata?.[WI_METADATA_KEY];
+      const isExplicitOther = (selected: string) => allWorldNames.includes(selected) && selected !== inheritedBook;
+      const targets = Object.entries(session.suggestedEntries).flatMap(([worldName, entries]) =>
+        entries.map((entry) => ({
+          entry,
+          selected: suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName,
+        })),
+      );
+      let chatTargetWorld = '';
+      if (targets.some(({ selected }) => !isExplicitOther(selected))) {
+        const resolved = await resolveTargetForAdd('');
+        if (!resolved.worldName) return;
+        chatTargetWorld = resolved.worldName;
+        if (resolved.baseEntries && !workingEntries[chatTargetWorld]) {
+          workingEntries[chatTargetWorld] = structuredClone(resolved.baseEntries);
+          writableWorlds.add(chatTargetWorld);
         }
-        if (status === 'added') addedCount++;
-        else updatedCount++;
-        modifiedWorlds.add(worldName);
-      } catch (error) {
-        st_echo('error', `Failed to process entry: ${entry.comment}`);
       }
-    }
 
-    for (const worldName of modifiedWorlds) {
-      try {
-        await globalContext.saveWorldInfo(worldName, toWorldInfoSaveFormat(workingEntries[worldName]));
-        globalContext.reloadWorldInfoEditor(worldName, true);
-      } catch (error) {
-        st_echo('error', `Failed to save world: ${worldName}`);
+      for (const { entry, selected } of targets) {
+        const worldName = isExplicitOther(selected) ? selected : chatTargetWorld;
+        try {
+          if (!writableWorlds.has(worldName)) {
+            workingEntries[worldName] = structuredClone(workingEntries[worldName] ?? []);
+            writableWorlds.add(worldName);
+          }
+          const status = applyEntryToWorld(workingEntries[worldName], worldName, entry);
+          const pending = pendingByWorld.get(worldName) ?? [];
+          pending.push({ entry, status });
+          pendingByWorld.set(worldName, pending);
+        } catch (error) {
+          st_echo('error', `Failed to process entry: ${entry.comment}`);
+        }
       }
-    }
 
-    setEntriesGroupByWorldName(workingEntries);
-    setSession((prev) => ({ ...prev, suggestedEntries: {} }));
-    setSuggestionTargetWorlds({});
-    st_echo('success', `Processed: ${addedCount} new, ${updatedCount} updated, ${unchangedCount} unchanged.`);
-    setIsGenerating(false);
+      for (const [worldName, pending] of pendingByWorld) {
+        try {
+          const hasChanges = pending.some(({ status }) => status !== 'unchanged');
+          if (hasChanges) {
+            await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(workingEntries[worldName]));
+            persistedWorlds[worldName] = workingEntries[worldName];
+          }
+          pending.forEach(({ entry, status }) => {
+            completed.add(entry);
+            if (status === 'added') addedCount++;
+            else if (status === 'updated') updatedCount++;
+            else unchangedCount++;
+          });
+          if (hasChanges) globalContext.reloadWorldInfoEditor(worldName, true);
+        } catch (error) {
+          st_echo('error', `Failed to save world: ${worldName}`);
+        }
+      }
+
+      setEntriesGroupByWorldName((previous) => ({ ...previous, ...persistedWorlds }));
+      // Remove only the submitted objects that succeeded. A user may have edited
+      // or generated additional suggestions while these writes were in flight.
+      setSession((previous) => ({
+        ...previous,
+        suggestedEntries: Object.fromEntries(
+          Object.entries(previous.suggestedEntries).map(([name, entries]) => [
+            name,
+            entries.filter((entry) => !completed.has(entry)),
+          ]),
+        ),
+      }));
+      const remainingCount = totalEntries - completed.size;
+      st_echo(
+        remainingCount ? 'warning' : 'success',
+        `Applied: ${addedCount} new, ${updatedCount} updated, ${unchangedCount} unchanged.${remainingCount ? ` ${remainingCount} suggestions could not be applied and were kept.` : ''}`,
+      );
+    } catch (error) {
+      st_echo('error', `Failed to apply suggestions: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleReset = async () => {
@@ -996,9 +1004,8 @@ export const MainPopup: FC = () => {
 
       const normalizedEntries = worldEntries.map((entry) => normalizeExtendedEntry(entry));
       worldInfoCopy[worldName] = normalizedEntries;
-      setEntriesGroupByWorldName(worldInfoCopy);
-
-      await globalContext.saveWorldInfo(worldName, toWorldInfoSaveFormat(normalizedEntries));
+      await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(normalizedEntries));
+      setEntriesGroupByWorldName((previous) => ({ ...previous, [worldName]: normalizedEntries }));
       globalContext.reloadWorldInfoEditor(worldName, true);
     },
     [entriesGroupByWorldName],
@@ -1006,8 +1013,8 @@ export const MainPopup: FC = () => {
 
   const handleReplaceEditorWorldEntries = useCallback(async (worldName: string, entries: ExtendedWIEntry[]) => {
     const normalizedEntries = entries.map((entry) => normalizeExtendedEntry(entry));
+    await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(normalizedEntries));
     setEntriesGroupByWorldName((previous) => ({ ...previous, [worldName]: normalizedEntries }));
-    await globalContext.saveWorldInfo(worldName, toWorldInfoSaveFormat(normalizedEntries));
     globalContext.reloadWorldInfoEditor(worldName, true);
   }, []);
 
@@ -1023,21 +1030,22 @@ export const MainPopup: FC = () => {
 
   const entriesForGlobalRevise = useMemo(() => {
     const mergedState: Record<string, ExtendedWIEntry[]> = structuredClone(entriesForSelectionPopup);
-    const suggestedByUid = new Map<number, { worldName: string; entry: ExtendedWIEntry }>();
+    const suggestedByUid = new Map<string, { worldName: string; entry: ExtendedWIEntry }>();
 
     Object.entries(session.suggestedEntries).forEach(([worldName, entries]) => {
       entries.forEach((entry) => {
-        if (entry.uid) {
-          suggestedByUid.set(entry.uid, { worldName, entry });
+        if (Number.isInteger(entry.uid)) {
+          suggestedByUid.set(`${worldName}::${entry.uid}`, { worldName, entry });
         }
       });
     });
 
-    Object.entries(mergedState).forEach(([, entries]) => {
+    Object.entries(mergedState).forEach(([worldName, entries]) => {
       entries.forEach((existingEntry, index) => {
-        if (existingEntry.uid && suggestedByUid.has(existingEntry.uid)) {
-          entries[index] = suggestedByUid.get(existingEntry.uid)!.entry;
-          suggestedByUid.delete(existingEntry.uid);
+        const key = `${worldName}::${existingEntry.uid}`;
+        if (suggestedByUid.has(key)) {
+          entries[index] = suggestedByUid.get(key)!.entry;
+          suggestedByUid.delete(key);
         }
       });
     });

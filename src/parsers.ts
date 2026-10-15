@@ -1,12 +1,14 @@
 import { getEntryKeys } from './components/lorebookEditorUtils.js';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
+import { escapeXmlText } from './xml-utils.js';
 
 const xmlParser = new XMLParser({
   ignoreAttributes: true,
   textNodeName: '#text',
   trimValues: true,
   allowBooleanAttributes: true,
+  parseTagValue: false,
 });
 
 export interface ParseOptions {
@@ -20,10 +22,25 @@ function ensureArray(data: any, schema: any) {
   }
 
   for (const key in schema.properties) {
-    if (!data.hasOwnProperty(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(data, key)) continue;
 
     const propSchema = schema.properties[key];
     let propData = data[key];
+
+    // The supplied XML example wraps every kind of array in <item> elements.
+    if (
+      propSchema.type === 'array' &&
+      propData &&
+      typeof propData === 'object' &&
+      !Array.isArray(propData) &&
+      Object.keys(propData).length === 1 &&
+      Object.prototype.hasOwnProperty.call(propData, 'item')
+    ) {
+      propData = propData.item;
+      // Preserve an explicitly empty string item, distinct from an empty array tag.
+      propData = Array.isArray(propData) ? propData : [propData];
+      data[key] = propData;
+    }
 
     // Ensure the property is an array if the schema requires it and it's not one already.
     if (propSchema.type === 'array' && !Array.isArray(propData)) {
@@ -102,8 +119,14 @@ function ensureArray(data: any, schema: any) {
 
     // Coerce types to match schema, for both single properties and items within an array.
     if (propSchema.type === 'string' && typeof propData !== 'string') {
+      if (propData !== null && typeof propData === 'object') {
+        throw new Error(`Expected text for "${key}". Escape embedded markup or use CDATA.`);
+      }
       data[key] = String(propData);
     } else if (propSchema.type === 'array' && propSchema.items?.type === 'string' && Array.isArray(propData)) {
+      if (propData.some((item) => item !== null && typeof item === 'object')) {
+        throw new Error(`Expected text items for "${key}".`);
+      }
       data[key] = propData.map(String);
     }
   }
@@ -176,11 +199,11 @@ export function getPrefilled(worldName: string, entry: WIEntry, format: 'xml' | 
       return `
 <lorebooks>
   <entry>
-    <worldName>${worldName}</worldName>
+    <worldName>${escapeXmlText(worldName)}</worldName>
     <id>${entry.uid}</id>
-    <name>${entry.comment}</name>
-    <triggers>${getEntryKeys(entry).join(',')}</triggers>
-    <content>${entry.content}`;
+    <name>${escapeXmlText(entry.comment)}</name>
+    <triggers>${escapeXmlText(getEntryKeys(entry).join(','))}</triggers>
+    <content>${escapeXmlText(entry.content)}`;
     case 'json':
       return JSON.stringify(
         {
@@ -210,11 +233,11 @@ export function getFull(worldName: string, entry: WIEntry, format: 'xml' | 'json
       return `
 <lorebooks>
   <entry>
-    <worldName>${worldName}</worldName>
+    <worldName>${escapeXmlText(worldName)}</worldName>
     <id>${entry.uid}</id>
-    <name>${entry.comment}</name>
-    <triggers>${getEntryKeys(entry).join(',')}</triggers>
-    <content>${entry.content}</content>
+    <name>${escapeXmlText(entry.comment)}</name>
+    <triggers>${escapeXmlText(getEntryKeys(entry).join(','))}</triggers>
+    <content>${escapeXmlText(entry.content)}</content>
   </entry>
 </lorebooks>`;
     case 'json':

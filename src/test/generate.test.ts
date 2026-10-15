@@ -133,3 +133,35 @@ describe('buildRecommendationMessages', () => {
     expect(messages[0].content).toContain('<content>Existing');
   });
 });
+
+describe('runWorldInfoRecommendation continuation', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('SillyTavern', { getContext: makeContext });
+  });
+
+  test('uses its own XML prefill when earlier assistant messages occur in chat history', async () => {
+    const { buildPrompt } = await import('sillytavern-utils-lib');
+    const { withRuntimeConnectionProfile } = await import('../api-settings.js');
+    vi.mocked(buildPrompt).mockResolvedValue({ result: [
+      { role: 'user', content: 'Earlier question' }, { role: 'assistant', content: 'Earlier answer.' },
+    ] } as any);
+    vi.mocked(withRuntimeConnectionProfile).mockImplementation(async (id, callback) => callback(id, {} as any));
+    const { runWorldInfoRecommendation, globalContext } = await import('../generate.js');
+    vi.mocked(globalContext.ConnectionManagerRequestService.sendRequest).mockResolvedValue({
+      content: ' continued</content></entry></lorebooks>',
+    } as any);
+    const entry = makeEntry({ uid: 7, key: ['trigger'], content: 'Existing <b>markup</b>', comment: 'Entry' });
+    const result = await runWorldInfoRecommendation({
+      profileId: 'profile-1', userPrompt: 'continue', buildPromptOptions: {},
+      entriesGroupByWorldName: { Earth: [entry] },
+      session: { selectedWorldNames: ['Earth'], selectedEntryUids: {}, blackListedEntries: [], suggestedEntries: {}, regexIds: {} },
+      promptSettings: {} as any, mainContextList: [{ promptName: 'chatHistory', role: 'system' }],
+      maxResponseToken: 1000, continueFrom: { worldName: 'Earth', entry, mode: 'continue' },
+    });
+    expect(result.Earth[0].content).toBe('Existing <b>markup</b> continued');
+    const sent = vi.mocked(globalContext.ConnectionManagerRequestService.sendRequest).mock.calls[0][1] as any[];
+    expect(sent[1].content).toBe('Earlier answer.');
+    expect(sent.at(-1).content).toContain('Existing &lt;b&gt;markup&lt;/b&gt;');
+  });
+});
