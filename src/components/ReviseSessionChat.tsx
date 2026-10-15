@@ -27,6 +27,18 @@ import { toWorldInfoSaveFormat } from './lorebookEditorUtils.js';
 
 const globalContext = SillyTavern.getContext();
 
+// Keep host/provider protocol fields (including instruct and tool metadata),
+// while removing revision UI state and the prompt builder's raw chat source.
+export const toRevisionRequestMessages = (messages: readonly ReviseMessage[]) =>
+  messages.map(({
+    id: _id,
+    isInitial: _initial,
+    stateSnapshot: _snapshot,
+    isStateUpdate: _update,
+    source: _source,
+    ...message
+  }) => message);
+
 const calculateNewState = (prevState: WIEntry, response: EntryRevisionResponse): WIEntry => {
   const newState = structuredClone(prevState);
   newState.comment = response.name;
@@ -384,7 +396,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           });
           const responseContent = await makePlainRequest(
             activeProfileId,
-            finalMessagesForRequest.map(({ role, content }) => ({ role, content })),
+            toRevisionRequestMessages(finalMessagesForRequest),
             settings.maxResponseToken,
             controller.signal,
           );
@@ -406,7 +418,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           if (session.type === 'entry') {
             const response = await makeStructuredRequest(
               activeProfileId,
-              finalMessagesForRequest.map(({ role, content }) => ({ role, content })),
+              toRevisionRequestMessages(finalMessagesForRequest),
               EntryRevisionResponseSchema,
               REVISE_SCHEMA_NAME.ENTRY,
               session.promptEngineeringMode,
@@ -420,7 +432,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             // 'global'
             const response = await makeStructuredRequest(
               activeProfileId,
-              finalMessagesForRequest.map(({ role, content }) => ({ role, content })),
+              toRevisionRequestMessages(finalMessagesForRequest),
               GlobalRevisionResponseSchema,
               REVISE_SCHEMA_NAME.GLOBAL,
               session.promptEngineeringMode,

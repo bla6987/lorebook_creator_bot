@@ -1,3 +1,5 @@
+import * as revisionIdentity from '../revise-entry-identity.js';
+import * as messageRanges from '../message-ranges.js';
 import { beforeAll, beforeEach, afterEach, expect, test, vi } from 'vitest';
 import * as React from 'react';
 import * as jsxRuntime from 'react/jsx-runtime';
@@ -29,7 +31,10 @@ beforeAll(() => {
     '../settings.js': { settingsManager: { getSettings: () => state.settings } },
     '../generate.js': { buildRecommendationMessages: vi.fn(), runWorldInfoRecommendation: vi.fn() },
     '../api-settings.js': { getRuntimeConnectionProfile: vi.fn() },
+    '../message-ranges.js': messageRanges,
+    '../revise-entry-identity.js': revisionIdentity,
     '../world-info-save.js': { saveWorldInfoChecked: vi.fn() },
+    '../revise-session-storage.js': { relocateEntryRevisionSessions: vi.fn() },
     '../hooks/useForceUpdate.js': { useForceUpdate }, './lorebookEditorUtils.js': editorUtils,
     'sillytavern-utils-lib': { getWorldInfos: async () => ({}) },
     'sillytavern-utils-lib/types/popup': { POPUP_TYPE: {} },

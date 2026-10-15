@@ -132,3 +132,27 @@ test('an empty world is successful when its file exists on the server', async ()
   expect(disk.has('New')).toBe(true);
   expect(cache.get('New')).toEqual({ entries: {} });
 });
+
+test('same-world writes wait for earlier verification before writing or publishing cache', async () => {
+  let release!: (response: any) => void;
+  fetchMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const first = save('A', data('first'));
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const second = save('A', data('second'));
+  await Promise.resolve();
+  expect(hostSave).toHaveBeenCalledTimes(1);
+  release({ ok: true, json: async () => data('first') });
+  await Promise.all([first, second]);
+  expect(hostSave).toHaveBeenCalledTimes(2);
+  expect(disk.get('A')).toEqual(data('second'));
+  expect(cache.get('A')).toEqual(data('second'));
+});
+
+test('failed verification releases the same-world queue for a successful retry', async () => {
+  fetchMock.mockResolvedValueOnce({ ok: false, status: 500 });
+  const first = save('A', data('failed'));
+  const second = save('A', data('retry'));
+  await expect(first).rejects.toThrow('HTTP 500');
+  await second;
+  expect(cache.get('A')).toEqual(data('retry'));
+});

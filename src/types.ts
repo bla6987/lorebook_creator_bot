@@ -1,6 +1,7 @@
 import type { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 
 export interface ExtendedWIEntry extends WIEntry {
+  _wircRevisionId?: string;
   constant?: boolean;
   vectorized?: boolean;
   order?: number;

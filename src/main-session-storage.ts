@@ -7,14 +7,19 @@ export const getMainSessionKey = (avatarKey: string) => `worldInfoRecommend_${av
 function validateSession(value: unknown): Partial<Session> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid saved session');
   const session = value as Partial<Session>;
-  for (const key of ['suggestedEntries', 'selectedEntryUids', 'regexIds'] as const) {
+  for (const key of ['suggestedEntries', 'selectedEntryUids', 'regexIds', 'suggestionTargetWorlds', 'implicitChatTargets'] as const) {
     if (session[key] !== undefined && (!session[key] || typeof session[key] !== 'object' || Array.isArray(session[key]))) {
       throw new Error(`Invalid saved session field: ${key}`);
     }
   }
-  for (const key of ['blackListedEntries', 'selectedWorldNames'] as const) {
+  for (const key of ['blackListedEntries', 'selectedWorldNames', 'explicitOtherTargets'] as const) {
     if (session[key] !== undefined && (!Array.isArray(session[key]) || !session[key]!.every(item => typeof item === 'string'))) {
       throw new Error(`Invalid saved session field: ${key}`);
+    }
+  }
+  for (const key of ['suggestionTargetWorlds', 'implicitChatTargets'] as const) {
+    if (!Object.values(session[key] ?? {}).every((target) => typeof target === 'string')) {
+      throw new Error(`Invalid saved target mapping: ${key}`);
     }
   }
   for (const ids of Object.values(session.selectedEntryUids ?? {})) {

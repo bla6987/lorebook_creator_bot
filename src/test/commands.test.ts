@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ExtendedWIEntry } from '../types.js';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { getMessageIndexes, parseMessageRangeArgument } from '../message-ranges.js';
 
 const harness = vi.hoisted(() => ({
   settings: {} as any,
@@ -76,6 +77,7 @@ async function initializeRun() {
     },
     './settings.js': { settingsManager: { getSettings: () => harness.settings } },
     './world-info-save.js': { saveWorldInfoChecked: harness.save },
+    './message-ranges.js': { getMessageIndexes, parseMessageRangeArgument },
     './html-utils.js': compileSource('../html-utils.ts', {}),
   });
   initializeCommands();
@@ -123,6 +125,15 @@ beforeEach(() => {
 });
 
 describe('slash command restrictions', () => {
+  test('an explicit empty editable allowlist rejects every update while omission allows them', async () => {
+    harness.suggestions = { World: [makeEntry(1, 'Renamed', 'Updated')] };
+    const run = await initializeRun();
+    expect(await run({ 'allowed-ops': '[update]', 'editable-entries': '[]' })).toBe(true);
+    expect(harness.save).not.toHaveBeenCalled();
+    expect(await run({ 'allowed-ops': '[update]' })).toBe(true);
+    expect(harness.save).toHaveBeenCalledTimes(1);
+    expect(harness.save.mock.calls[0][1].entries[1].content).toBe('Updated');
+  });
   test('add-only rejects an existing UID even when its suggested title changes', async () => {
     harness.suggestions = { World: [makeEntry(1, 'Renamed', 'Forbidden overwrite')] };
     const run = await initializeRun();
@@ -204,8 +215,22 @@ describe('slash command context overrides', () => {
     expect(await run({ messages: 'all' })).toBe(true);
     expect(harness.lastParams.buildPromptOptions.messageIndexesBetween).toBeUndefined();
     expect(await run({ context: '[worldInfo]', messages: 'first:2' })).toBe(true);
-    expect(harness.lastParams.buildPromptOptions.messageIndexesBetween).toEqual({ start: 0, end: 2 });
+    expect(harness.lastParams.buildPromptOptions.messageIndexesBetween).toEqual({ start: 0, end: 1 });
     expect(harness.settings).toEqual(original);
+  });
+
+  test('retains zero range bounds and rejects malformed ranges before generation', async () => {
+    const run = await initializeRun();
+    expect(await run({ messages: 'range:0-0' })).toBe(true);
+    expect(harness.lastParams.buildPromptOptions.messageIndexesBetween).toEqual({ start: 0, end: 0.5 });
+    for (const messages of ['range:2-1', 'first:-1', 'last:2x', 'range:0-', 'first:1.5']) {
+      harness.lastParams = undefined;
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await run({ messages })).toBe(false);
+        expect(harness.lastParams).toBeUndefined();
+      } finally { consoleError.mockRestore(); }
+    }
   });
 });
 

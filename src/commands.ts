@@ -13,6 +13,7 @@ import {
 } from './generate.js';
 import { ContextToSend, settingsManager } from './settings.js';
 import { saveWorldInfoChecked } from './world-info-save.js';
+import { getMessageIndexes, parseMessageRangeArgument } from './message-ranges.js';
 import { escapeHtml } from './html-utils.js';
 
 export function initializeCommands() {
@@ -296,7 +297,7 @@ export function initializeCommands() {
               editableEntriesSet.add(item.trim());
             });
           }
-          const limitUpdates = editableEntriesSet.size > 0;
+          const limitUpdates = parsedEditableEntries !== null;
 
           // Prepare ContextToSend based on args or fallback to settings
           const parsedContextToSend = parseList(namedArgs.context as string | undefined);
@@ -313,26 +314,7 @@ export function initializeCommands() {
           }
           // Override message range if specified
           if (namedArgs.messages) {
-            const msgArg = (namedArgs.messages as string).toLowerCase().trim();
-            if (msgArg === 'all') contextToSend.messages.type = 'all';
-            else if (msgArg === 'none') contextToSend.messages.type = 'none';
-            else if (msgArg.startsWith('first:')) {
-              contextToSend.messages.type = 'first';
-              contextToSend.messages.first = parseInt(msgArg.split(':')[1]) || 10;
-            } else if (msgArg.startsWith('last:')) {
-              contextToSend.messages.type = 'last';
-              contextToSend.messages.last = parseInt(msgArg.split(':')[1]) || 10;
-            } else if (msgArg.startsWith('range:')) {
-              const parts = msgArg.split(':')[1].split('-');
-              contextToSend.messages.type = 'range';
-              contextToSend.messages.range = {
-                start: parseInt(parts[0]) || 0,
-                end: parseInt(parts[1]) || 10,
-              };
-            } else {
-              if (!silent)
-                st_echo('warning', `Invalid 'messages' argument format: "${namedArgs.messages}". Using default.`);
-            }
+            contextToSend.messages = parseMessageRangeArgument(String(namedArgs.messages));
           }
 
           // Prepare BuildPromptOptions
@@ -357,34 +339,10 @@ export function initializeCommands() {
             targetCharacterId: selected_group ? this_chid : undefined, // Simplification: Use current char in group context
           };
 
-          // Add message range options
-          switch (contextToSend.messages.type) {
-            case 'none':
-              buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
-              break;
-            case 'first':
-              buildPromptOptions.messageIndexesBetween = { start: 0, end: contextToSend.messages.first ?? 10 };
-              break;
-            case 'last':
-              const lastCount = contextToSend.messages.last ?? 10;
-              const chatLength = globalContext.chat?.length ?? 0;
-              buildPromptOptions.messageIndexesBetween = {
-                end: Math.max(0, chatLength - 1),
-                start: Math.max(0, chatLength - lastCount),
-              };
-              break;
-            case 'range':
-              if (contextToSend.messages.range) {
-                buildPromptOptions.messageIndexesBetween = {
-                  start: contextToSend.messages.range.start,
-                  end: contextToSend.messages.range.end,
-                };
-              }
-              break;
-            case 'all':
-            default:
-              break; // No range needed
-          }
+          buildPromptOptions.messageIndexesBetween = getMessageIndexes(
+            contextToSend.messages,
+            globalContext.chat?.length ?? 0,
+          );
 
           // Prepare Session (simplified for command)
           const session: Session = {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 const mock = vi.hoisted(() => ({
   profiles: [] as any[], presets: new Map<string, any>(), savePreset: vi.fn(), saveSettings: vi.fn(), emit: vi.fn(),
-  sanitize: vi.fn(), fetch: vi.fn(),
+  sanitize: vi.fn(), fetch: vi.fn(), presetList: vi.fn(),
 }));
 vi.mock('sillytavern-utils-lib/config', () => ({ st_echo: vi.fn() }));
 
@@ -9,6 +9,9 @@ beforeEach(() => {
   vi.resetModules();
   mock.profiles.length = 0;
   mock.presets.clear();
+  mock.presetList.mockReset().mockImplementation(() => ({ preset_names: Object.fromEntries(
+    [...mock.presets.keys()].map((name, index) => [name, index]),
+  ) }));
   mock.savePreset.mockReset().mockImplementation(async (name, preset) => mock.presets.set(name, preset));
   mock.saveSettings.mockReset();
   mock.emit.mockReset();
@@ -21,6 +24,7 @@ beforeEach(() => {
     extensionSettings: { connectionManager: { profiles: mock.profiles } },
     getPresetManager: () => ({
       getCompletionPresetByName: (name: string) => mock.presets.get(name), savePreset: mock.savePreset,
+      getPresetList: mock.presetList,
     }),
     uuidv4: () => 'new-id', saveSettingsDebounced: mock.saveSettings,
     getRequestHeaders: () => ({ 'X-CSRF-Token': 'test-token' }),
@@ -29,6 +33,53 @@ beforeEach(() => {
 });
 
 describe('profile creation', () => {
+  test.each(['array', 'map'])('rejects case aliases in the host %s name collection', async (shape) => {
+    const saved = { temperature: 0.9 };
+    mock.presets.set('Independent preset', saved);
+    mock.presetList.mockImplementation(() => ({ preset_names:
+      shape === 'array' ? ['Independent preset'] : { 'Independent preset': 0 },
+    }));
+    const { createConnectionProfileFromDraft } = await import('../api-settings.js');
+    await expect(createConnectionProfileFromDraft({ id: 'source' } as any, { temperature: 0.1 }, 'openai', 'independent preset'))
+      .rejects.toThrow('already exists');
+    expect(mock.presets.get('Independent preset')).toBe(saved);
+    expect(mock.savePreset).not.toHaveBeenCalled();
+    expect(mock.profiles).toEqual([]);
+  });
+
+  test('rejects Unicode normalization aliases and fails closed without a host name collection', async () => {
+    const { createConnectionProfileFromDraft } = await import('../api-settings.js');
+    mock.presets.set('Café', {});
+    await expect(createConnectionProfileFromDraft({ id: 'source' } as any, {}, 'openai', 'Cafe\u0301'))
+      .rejects.toThrow('already exists');
+    mock.presetList.mockReturnValue(undefined);
+    await expect(createConnectionProfileFromDraft({ id: 'source' } as any, {}, 'openai', 'New profile'))
+      .rejects.toThrow('Could not verify existing preset names');
+    expect(mock.savePreset).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['ß', 'ss'], ['ẞ', 'ss'], ['ß', 'ẞ'], ['Σ', 'ς'], ['σ', 'ς'], ['ſ', 'S'],
+    ['ﬃ', 'ffi'], ['ΐ', 'ι\u0308\u0301'],
+  ])('preserves the existing Unicode preset %s when its filename aliases %s', async (existing, requested) => {
+    const saved = { temperature: 0.9 };
+    mock.presets.set(existing, saved);
+    const { createConnectionProfileFromDraft } = await import('../api-settings.js');
+    await expect(createConnectionProfileFromDraft({ id: 'source' } as any, { temperature: 0.1 }, 'openai', requested))
+      .rejects.toThrow('already exists');
+    expect(mock.presets.get(existing)).toBe(saved);
+    expect(mock.savePreset).not.toHaveBeenCalled();
+    expect(mock.profiles).toEqual([]);
+  });
+
+  test('preserves distinct Unicode names when creating a profile', async () => {
+    mock.presets.set('Café', { temperature: 0.9 });
+    const { createConnectionProfileFromDraft } = await import('../api-settings.js');
+    const result = await createConnectionProfileFromDraft({ id: 'source' } as any, {}, 'openai', '日本語');
+    expect(result.name).toBe('日本語');
+    expect(mock.savePreset).toHaveBeenCalledWith('日本語', {});
+  });
+
   test('preserves an existing preset even when no profile shares its name', async () => {
     const { createConnectionProfileFromDraft } = await import('../api-settings.js');
     const saved = { temperature: 0.9 };

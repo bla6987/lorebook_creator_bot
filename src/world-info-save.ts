@@ -5,13 +5,29 @@ import type { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 
 type WorldInfoData = { entries: Record<number, WIEntry>; [key: string]: unknown };
 
+const pendingSaves = new Map<string, Promise<void>>();
+
+// Keep each write and its verification together: an older verification must not
+// overwrite the cache after another write to the same world has completed.
+export function saveWorldInfoChecked(name: string, data: WorldInfoData): Promise<void> {
+  const snapshot = structuredClone(data);
+  const previous = pendingSaves.get(name) ?? Promise.resolve();
+  const result = previous.catch(() => {}).then(() => saveWorldInfoImmediately(name, snapshot));
+  pendingSaves.set(name, result);
+  const cleanup = () => {
+    if (pendingSaves.get(name) === result) pendingSaves.delete(name);
+  };
+  void result.then(cleanup, cleanup);
+  return result;
+}
+
 /**
  * Use an immediate host save to flush its shared debounce, then verify the
  * server's copy directly. The host ignores failed HTTP statuses and its loader
  * returns optimistic cached data, so neither its promise nor cache proves that
  * the write succeeded. A read-back also lets us restore the cache on failure.
  */
-export async function saveWorldInfoChecked(name: string, data: WorldInfoData): Promise<void> {
+async function saveWorldInfoImmediately(name: string, data: WorldInfoData): Promise<void> {
   if (!name.trim()) throw new Error('A lorebook name is required.');
   const snapshot = structuredClone(data);
   const expected = JSON.stringify(snapshot);
@@ -48,7 +64,10 @@ export async function saveWorldInfoChecked(name: string, data: WorldInfoData): P
     // separately when that dummy could otherwise count as a successful save.
     if (persisted && Object.keys(persisted.entries).length === 0) {
       const listing = await fetch('/api/worldinfo/list', {
-        method: 'POST', headers: context.getRequestHeaders(), body: '{}', cache: 'no-store',
+        method: 'POST',
+        headers: context.getRequestHeaders(),
+        body: '{}',
+        cache: 'no-store',
       });
       if (!listing.ok) throw new Error(`Existence verification failed (HTTP ${listing.status}).`);
       const worlds: { file_id: string }[] = await listing.json();
@@ -65,12 +84,17 @@ export async function saveWorldInfoChecked(name: string, data: WorldInfoData): P
     else if (hadCached) worldInfoCache.set(name, previous);
     else worldInfoCache.delete(name);
     try {
-      await context.eventSource.emit(context.eventTypes.WORLDINFO_UPDATED, name,
-        structuredClone(persisted ?? previous ?? { entries: {} }));
+      await context.eventSource.emit(
+        context.eventTypes.WORLDINFO_UPDATED,
+        name,
+        structuredClone(persisted ?? previous ?? { entries: {} }),
+      );
     } catch (listenerError) {
       console.warn(`Could not notify listeners about the restored lorebook "${name}":`, listenerError);
     }
-    throw new Error(`Could not verify the save of lorebook "${name}": ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Could not verify the save of lorebook "${name}": ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (writeError) console.warn(`Lorebook "${name}" was verified on disk despite a host save error:`, writeError);
 }

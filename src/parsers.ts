@@ -137,7 +137,9 @@ export function parseResponse(
   format: 'xml' | 'json' | 'none',
   options: ParseOptions = {},
 ): object | string {
-  const codeBlockRegex = /```(?:\w+\n|\n)?([\s\S]*?)```/;
+  // Match the enclosing response fence through its final delimiter. Fences
+  // inside JSON strings or XML text are part of the response content.
+  const codeBlockRegex = /^\s*(?:[^`]*\r?\n)?```(?:\w+)?[ \t]*\r?\n([\s\S]*)\r?\n```\s*$/;
   const codeBlockMatch = content.match(codeBlockRegex);
   let cleanedContent = codeBlockMatch ? codeBlockMatch[1].trim() : content.trim();
   const { previousContent } = options;

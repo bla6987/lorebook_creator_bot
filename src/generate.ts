@@ -19,6 +19,9 @@ export interface Session {
   selectedWorldNames: string[];
   selectedEntryUids: Record<string, number[]>;
   regexIds: Record<string, Partial<RegexScriptData>>;
+  suggestionTargetWorlds?: Record<string, string>;
+  implicitChatTargets?: Record<string, string>;
+  explicitOtherTargets?: string[];
 }
 
 // @ts-ignore

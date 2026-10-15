@@ -6,6 +6,7 @@ import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { CompareEntryPopup } from './CompareEntryPopup.js';
 import { EditEntryPopup, EditEntryPopupRef } from './EditEntryPopup.js';
 import { ReviseSessionManager, type EntryRevisionApplyArgs } from './ReviseSessionManager.js';
+import { withEntryRevisionId } from '../revise-entry-identity.js';
 import { Session } from '../generate.js';
 import { ExtensionSettings } from '../settings.js';
 import { ExtendedWIEntry } from '../types.js';
@@ -289,6 +290,11 @@ export const SuggestedEntry: FC<SuggestedEntryProps> = ({
             <ReviseSessionManager
               target={{ type: 'entry', worldName: initialWorldName, entry: entry }}
               initialState={entry}
+              onEnsureEntryIdentity={async (current) => {
+                const identified = withEntryRevisionId(current);
+                onUpdate(initialWorldName, entry, identified, sessionRegexIds);
+                return identified;
+              }}
               onClose={() => setIsReviseSessionManagerOpen(false)}
               onApply={handleApplyReviseSession}
               sessionForContext={sessionForContext}

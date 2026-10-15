@@ -181,7 +181,21 @@ export async function createConnectionProfileFromDraft(
     throw new Error('Profile name is not a valid preset filename. Choose another name.');
   }
 
-  if (presetManager.getCompletionPresetByName(trimmedName) !== undefined) {
+  // The host exposes arrays for text-completion names and name/index maps
+  // for chat completion. Protect both from case and Unicode-normalization
+  // aliases on the case-insensitive filesystems used by macOS and Windows.
+  const presetNames = presetManager.getPresetList?.()?.preset_names;
+  if (!presetNames || typeof presetNames !== 'object') {
+    throw new Error('Could not verify existing preset names. No profile or preset was saved.');
+  }
+  const existingNames = Array.isArray(presetNames) ? presetNames : Object.keys(presetNames);
+  // Lower/upper/lower also folds expansions and special casing (ß/ẞ/ss,
+  // final sigma, long s). Normalize again after case conversion because that
+  // conversion can introduce combining characters. Conservative extra matches
+  // are preferable to replacing a preset through a filesystem alias.
+  const filenameKey = (value: string) =>
+    value.normalize('NFD').toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  if (existingNames.some((existing: string) => filenameKey(existing) === filenameKey(trimmedName))) {
     throw new Error(`A preset named "${trimmedName}" already exists. Choose another profile name.`);
   }
 

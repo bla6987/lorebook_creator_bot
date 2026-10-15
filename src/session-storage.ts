@@ -3,6 +3,8 @@
 export interface SessionStorage {
   getItem<T>(key: string): Promise<T | null>;
   setItem<T>(key: string, value: T): Promise<T>;
+  keys?(): Promise<string[]>;
+  removeItem?(key: string): Promise<void>;
 }
 export type LegacyStorage = Pick<Storage, 'getItem' | 'removeItem'>;
 export interface LoadResult<T> {

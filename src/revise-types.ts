@@ -67,6 +67,9 @@ export interface ReviseSession {
   type: ReviseSessionType;
   // For 'entry' type sessions
   targetEntryIdentifier?: string;
+  // A UID identifies a slot; this identifies the entry's lifetime in that slot.
+  // Missing on legacy histories, which require explicit recovery before apply.
+  targetEntryRevisionId?: string;
   worldName?: string;
   createdAt: string;
   messages: ReviseMessage[];

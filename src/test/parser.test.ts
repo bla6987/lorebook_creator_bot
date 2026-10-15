@@ -318,6 +318,20 @@ The user wants a city entry.</think>\n${baseXml}`;
 });
 
 describe('XML response regressions', () => {
+  test.each(['json', 'xml'] as const)('preserves literal code fences in structured %s revisions', async (format) => {
+    const { EntryRevisionResponseSchema } = await import('../revise-types.js');
+    const { z } = await import('zod');
+    const content = 'Example:\n```text\nKeep this example\n```\nEnd.';
+    const expected = { justification: 'Updated', name: 'Entry', triggers: ['trigger'], content };
+    const document = format === 'json' ? JSON.stringify(expected) :
+      `<root><justification>Updated</justification><name>Entry</name><triggers><item>trigger</item></triggers><content><![CDATA[${content}]]></content></root>`;
+    for (const response of [document, `\`\`\`${format}\n${document}\n\`\`\``, `Here is the result:\n\`\`\`${format}\n${document}\n\`\`\``]) {
+      expect(EntryRevisionResponseSchema.parse(parseResponse(response, format, {
+        schema: z.toJSONSchema(EntryRevisionResponseSchema),
+      }))).toEqual(expected);
+    }
+  });
+
   test('parses the actual generated entry example without corrupting its trigger array', async () => {
     const { z } = await import('zod');
     const { EntryRevisionResponseSchema } = await import('../revise-types.js');

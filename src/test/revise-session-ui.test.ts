@@ -7,19 +7,25 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import * as Handlebars from 'handlebars';
 import * as editorUtils from '../components/lorebookEditorUtils.js';
-import { getReviseEntryIdentifier } from '../revise-session-storage.js';
+import { applyReviseSessionMutation, getReviseEntryIdentifier, type ReviseSessionMutation } from '../revise-session-storage.js';
+import * as revisionIdentity from '../revise-entry-identity.js';
+import { getMessageIndexes } from '../message-ranges.js';
 import type { ReviseSession } from '../revise-types.js';
 import type { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 
-const entry = { uid: 1, comment: 'Name', content: 'Original', key: ['Name'] } as WIEntry;
+const entry = { uid: 1, comment: 'Name', content: 'Original', key: ['Name'], disable: false,
+  keysecondary: [], _wircRevisionId: 'entry-lifetime' } as WIEntry;
 const state = {
   load: vi.fn(), save: vi.fn(), structured: vi.fn(), plain: vi.fn(),
   settings: { profileId: 'profile', prompts: {}, maxResponseToken: 100 },
   input: null as any,
+  apply: vi.fn(), confirm: vi.fn(), ensure: vi.fn(), buildPrompt: vi.fn(),
+  history: [] as ReviseSession[],
 };
 const session = (id: string): ReviseSession => ({
   id, name: `Session ${id}`, type: 'entry', worldName: 'Book',
   targetEntryIdentifier: getReviseEntryIdentifier('Book', 1), createdAt: '2026-10-14',
+  targetEntryRevisionId: 'entry-lifetime',
   profileId: 'profile', promptEngineeringMode: 'native', context: { mainContextTemplatePreset: 'Default' },
   messages: [{ id: `${id}-snapshot`, role: 'assistant', content: 'Earlier reply', stateSnapshot: entry }],
 });
@@ -40,8 +46,9 @@ beforeAll(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   HTMLElement.prototype.scrollIntoView = () => {};
   vi.stubGlobal('SillyTavern', { getContext: () => ({
-    chat: [], CONNECT_API_MAP: { test: { selected: 'test' } }, substituteParams: (text: string) => text,
-    Popup: { show: { confirm: async () => true } },
+    chat: Array.from({ length: 5 }, (_, index) => ({ mes: String(index) })),
+    CONNECT_API_MAP: { test: { selected: 'test' } }, substituteParams: (text: string) => text,
+    Popup: { show: { confirm: state.confirm } },
   }) });
   const modules: Record<string, any> = {
     react: React, 'react/jsx-runtime': jsxRuntime, handlebars: Handlebars,
@@ -59,9 +66,12 @@ beforeAll(() => {
       REVISE_SCHEMA_NAME: { ENTRY: 'entry', GLOBAL: 'global' }, CHAT_HISTORY_PLACEHOLDER_ID: 'placeholder',
     },
     '../request.js': { makeStructuredRequest: state.structured, makePlainRequest: state.plain },
-    'sillytavern-utils-lib': {}, 'sillytavern-utils-lib/types/popup': { POPUP_TYPE: {} },
+    'sillytavern-utils-lib': { buildPrompt: state.buildPrompt }, 'sillytavern-utils-lib/types/popup': { POPUP_TYPE: {} },
     '../revise-prompt-builder.js': {},
-    '../revise-session-storage.js': { getReviseEntryIdentifier, loadReviseSessions: state.load, saveReviseSessions: state.save },
+    '../revise-session-storage.js': { getReviseEntryIdentifier, applyReviseSessionMutation,
+      loadReviseSessions: state.load, persistReviseSessionMutation: state.save },
+    '../revise-entry-identity.js': revisionIdentity,
+    '../message-ranges.js': { getMessageIndexes },
   };
   for (const name of ['CompareStatePopup', 'CurrentStatePopup', 'GlobalStatePopup']) {
     modules[`./${name}.js`] = { [name]: () => null };
@@ -70,16 +80,31 @@ beforeAll(() => {
   Manager = compile('src/components/ReviseSessionManager.tsx', modules).ReviseSessionManager;
 });
 beforeEach(() => {
-  state.load.mockReset().mockResolvedValue({ value: [session('A'), session('B')], writable: true });
-  state.save.mockReset().mockResolvedValue({ persisted: true });
+  state.history = [session('A'), session('B')];
+  state.load.mockReset().mockImplementation(async () => ({ value: structuredClone(state.history), writable: true }));
+  state.save.mockReset().mockImplementation(async (mutation: ReviseSessionMutation) => {
+    state.history = applyReviseSessionMutation(state.history, mutation);
+    return { persisted: true };
+  });
+  state.apply.mockReset(); state.confirm.mockReset().mockResolvedValue(true);
+  state.ensure.mockReset().mockImplementation(async (value) => revisionIdentity.withEntryRevisionId(value));
+  state.buildPrompt.mockReset().mockImplementation(async (_api, options) => {
+    // Match the installed builder's truthy-end check and JS slice semantics.
+    const indexes = options.messageIndexesBetween;
+    const start = indexes?.start ?? 0;
+    const end = indexes?.end ? indexes.end + 1 : undefined;
+    const messages = Array.from({ length: 5 }, (_, index) => ({ role: 'user', content: String(index) }));
+    return { result: start === -1 && end === 0 ? [] : messages.slice(start, end) };
+  });
   state.structured.mockReset().mockResolvedValue(response);
   state.plain.mockReset().mockResolvedValue('Discussion');
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
-const mount = (comment = 'Name') => act(async () => root.render(createElement(Manager, {
+const mount = (comment = 'Name', overrides: Record<string, unknown> = {}) => act(async () => root.render(createElement(Manager, {
   target: { type: 'entry', worldName: 'Book', entry: { ...entry, comment } }, initialState: entry,
-  onClose: () => {}, onApply: () => {}, sessionForContext: {}, allEntries: {}, contextToSend: { messages: { type: 'none' } },
+  onClose: () => {}, onApply: state.apply, onEnsureEntryIdentity: state.ensure,
+  sessionForContext: {}, allEntries: {}, contextToSend: { messages: { type: 'none' } }, ...overrides,
 })));
 const select = (id: string) => act(async () => {
   Array.from(container.querySelectorAll<HTMLElement>('.session-info')).find(el => el.textContent?.includes(`Session ${id}`))!.click();
@@ -89,7 +114,7 @@ const send = async () => {
   await act(async () => { state.input.onChange({ target: { value: 'Revise this' } }); });
   await click('.chat-input-area button');
 };
-const lastSaved = () => state.save.mock.calls.at(-1)![0] as ReviseSession[];
+const lastSaved = () => state.history;
 
 test('leaving a revision aborts its request and ignores late results without changing another session', async () => {
   let finish!: (value: typeof response) => void;
@@ -153,4 +178,61 @@ test('a cancelled request cannot commit a late response and restores the prior c
   expect(state.save).not.toHaveBeenCalled();
   expect(container.querySelector('.loading')).toBeNull();
   expect(Array.from(container.querySelectorAll('.message-content')).map(el => el.textContent)).toEqual(['Earlier reply']);
+});
+
+test('a replacement in a recycled UID cannot open or apply its predecessor history without explicit recovery', async () => {
+  const replacement = { ...entry, comment: 'Replacement', _wircRevisionId: 'replacement-lifetime' };
+  await mount('Replacement', { target: { type: 'entry', worldName: 'Book', entry: replacement }, initialState: replacement });
+  expect(container.querySelectorAll('.session-item')).toHaveLength(0);
+  expect(container.querySelectorAll('.unverified-session-item')).toHaveLength(2);
+  expect(container.querySelector('button[title="Apply Changes and Close"]')).toBeNull();
+  state.confirm.mockResolvedValueOnce(false);
+  await click('button[title="Attach a copy of verified history"]');
+  expect(state.ensure).not.toHaveBeenCalled(); expect(state.save).not.toHaveBeenCalled();
+  const original = structuredClone(state.history[0]);
+  await click('button[title="Attach a copy of verified history"]');
+  const recovered = state.history.find(value => value.id !== 'A' && value.id !== 'B')!;
+  expect(recovered.targetEntryRevisionId).toBe('replacement-lifetime');
+  expect(state.history.find(value => value.id === 'A')).toEqual(original);
+  await click('button[title="Apply Changes and Close"]');
+  expect(state.apply.mock.calls[0][0].updatedEntry._wircRevisionId).toBe('replacement-lifetime');
+});
+
+test('an explicitly relocated suggestion session applies to its assigned world and host UID', async () => {
+  const assigned = { ...entry, uid: 77 };
+  state.history = state.history.map((value) => ({ ...value, worldName: 'Destination',
+    targetEntryIdentifier: getReviseEntryIdentifier('Destination', 77) }));
+  await mount('Name', { target: { type: 'entry', worldName: 'Destination', entry: assigned }, initialState: assigned });
+  expect(container.querySelectorAll('.session-item')).toHaveLength(2);
+  await select('A');
+  expect(state.history.find(value => value.id === 'A')?.worldName).toBe('Destination');
+  await click('button[title="Apply Changes and Close"]');
+  expect(state.apply.mock.calls[0][0]).toMatchObject({ worldName: 'Destination', updatedEntry: { uid: 77, _wircRevisionId: 'entry-lifetime' } });
+});
+
+test.each([
+  ['Copied book', 1],
+  ['Book', 2],
+])('native copies retaining a marker do not inherit source history (%s / UID %s)', async (worldName, uid) => {
+  const copy = { ...entry, uid };
+  await mount('Name', { target: { type: 'entry', worldName, entry: copy }, initialState: copy });
+  expect(container.querySelectorAll('.session-item')).toHaveLength(0);
+  expect(container.querySelector('button[title="Apply Changes and Close"]')).toBeNull();
+});
+
+test('apply revalidates saved lifetime and refuses a target deleted or replaced while its chat was open', async () => {
+  await mount(); await select('A');
+  state.ensure.mockRejectedValueOnce(new Error('The saved entry was replaced.'));
+  await click('button[title="Apply Changes and Close"]');
+  expect(state.ensure).toHaveBeenCalled(); expect(state.apply).not.toHaveBeenCalled();
+});
+
+test.each([
+  [{ type: 'first', first: 1 }, ['0']],
+  [{ type: 'range', range: { start: 0, end: 0 } }, ['0']],
+  [{ type: 'first', first: 0 }, []],
+])('manager chat-history selection %j reaches the request with exactly the selected indexes', async (messages, expected) => {
+  state.history = [{ ...session('A'), messages: [{ id: 'placeholder', role: 'system', content: 'placeholder', isInitial: true }] }];
+  await mount('Name', { contextToSend: { messages } }); await select('A'); await send();
+  expect(state.structured.mock.calls[0][1].map((message: any) => message.content).filter((text: string) => /^\d$/.test(text))).toEqual(expected);
 });

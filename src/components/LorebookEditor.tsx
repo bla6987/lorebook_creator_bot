@@ -6,6 +6,7 @@ import { escapeHtml } from '../html-utils.js';
 import { Session } from '../generate.js';
 import { ExtensionSettings } from '../settings.js';
 import { ReviseSessionManager } from './ReviseSessionManager.js';
+import { getEntryRevisionId, withEntryRevisionId } from '../revise-entry-identity.js';
 import { POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import {
   ACTIVATION_OPTIONS,
@@ -48,6 +49,7 @@ interface LorebookEditorProps {
   onSaveEntries: (worldName: string, entries: SaveEntryPayload[]) => Promise<void>;
   onReplaceWorldEntries: (worldName: string, entries: ExtendedWIEntry[]) => Promise<void>;
   onRefreshEntries: () => void | Promise<void>;
+  onEnsureEntryIdentity?: (worldName: string, entry: ExtendedWIEntry) => Promise<ExtendedWIEntry>;
   sessionForContext: Session;
   contextToSend: ExtensionSettings['contextToSend'];
 }
@@ -299,6 +301,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   onSaveEntries,
   onReplaceWorldEntries,
   onRefreshEntries,
+  onEnsureEntryIdentity,
   sessionForContext,
   contextToSend,
 }) => {
@@ -360,11 +363,14 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const draftEntriesRef = useRef(draftEntries);
   const dirtyIdsRef = useRef(dirtyIds);
   const deletedIdsRef = useRef(deletedIds);
+  const previousBaselineRef = useRef(normalizedEntries);
   draftEntriesRef.current = draftEntries;
   dirtyIdsRef.current = dirtyIds;
   deletedIdsRef.current = deletedIds;
 
   useEffect(() => {
+    const previousBaseline = previousBaselineRef.current;
+    previousBaselineRef.current = normalizedEntries;
     // Parent saves refresh the baseline. Keep drafts that have not been acknowledged
     // by their own save, including edits made while an earlier save was in flight.
     setDraftEntries((previous) =>
@@ -379,7 +385,23 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
               })
               .map((entry) => [entry.uid, entry]),
           );
-          const merged = entries.map((entry) => retained.get(entry.uid) ?? structuredClone(entry));
+          const merged = entries.map((entry) => {
+            const draft = retained.get(entry.uid);
+            if (!draft) return structuredClone(entry);
+            const baseline = previousBaseline[worldName]?.find((old) => old.uid === entry.uid);
+            if (!baseline) return draft;
+            // Keep only fields the user changed. A save from another action may
+            // have updated untouched fields on this very same entry meanwhile.
+            const next = structuredClone(entry) as ExtendedWIEntry & Record<string, unknown>;
+            const oldFields = baseline as ExtendedWIEntry & Record<string, unknown>;
+            const draftFields = draft as ExtendedWIEntry & Record<string, unknown>;
+            for (const field of new Set([...Object.keys(baseline), ...Object.keys(draft)])) {
+              if (field === '_wircRevisionId' || JSON.stringify(draftFields[field]) === JSON.stringify(oldFields[field])) continue;
+              if (field in draftFields) next[field] = structuredClone(draftFields[field]);
+              else delete next[field];
+            }
+            return next;
+          });
           const incomingUids = new Set(entries.map((entry) => entry.uid));
           retained.forEach((entry, uid) => {
             if (!incomingUids.has(uid)) merged.push(entry);
@@ -1139,6 +1161,18 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
             <ReviseSessionManager
               target={{ type: 'entry', worldName: reviseTarget.worldName, entry: reviseEntry }}
               initialState={reviseEntry}
+              onEnsureEntryIdentity={async (entry) => {
+                if (!onEnsureEntryIdentity) throw new Error('The editor cannot persist revision identity. Reopen the main popup.');
+                const identified = await onEnsureEntryIdentity(reviseTarget.worldName, entry);
+                const id = getEntryRevisionId(identified);
+                if (!id) throw new Error('The saved entry has no revision identity.');
+                setDraftEntries((previous) => ({
+                  ...previous,
+                  [reviseTarget.worldName]: (previous[reviseTarget.worldName] ?? []).map((draft) =>
+                    draft.uid === entry.uid ? withEntryRevisionId(draft, id) : draft),
+                }));
+                return identified;
+              }}
               onClose={() => setReviseTarget(null)}
               onApply={handleApplyReviseEntry}
               sessionForContext={sessionForContext}

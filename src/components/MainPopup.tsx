@@ -36,7 +36,6 @@ import { getRuntimeConnectionProfile } from '../api-settings.js';
 import { ExtendedWIEntry, SaveEntryPayload } from '../types.js';
 import { LorebookEditor } from './LorebookEditor.js';
 import {
-  cloneEntriesByWorld,
   getChangedEntryFields,
   normalizeEntriesByWorld,
   normalizeExtendedEntry,
@@ -48,6 +47,9 @@ import {
 import { WorldInfoRecommenderSettings } from './Settings.js';
 import { loadMainSession, saveMainSession } from '../main-session-storage.js';
 import { saveWorldInfoChecked } from '../world-info-save.js';
+import { getMessageIndexes } from '../message-ranges.js';
+import { createRevisionId, getEntryRevisionId, withEntryRevisionId } from '../revise-entry-identity.js';
+import { relocateEntryRevisionSessions } from '../revise-session-storage.js';
 
 if (!Handlebars.helpers['join']) {
   Handlebars.registerHelper('join', function (array: any, separator: any) {
@@ -98,13 +100,16 @@ type MobilePanel = 'setup' | 'suggestions' | 'settings' | 'activity';
 const hasOwnEntryField = (entry: ExtendedWIEntry, field: OptionalEntryField) =>
   Object.prototype.hasOwnProperty.call(entry, field);
 
-const buildEntryUpdatePayload = (entry: ExtendedWIEntry): Partial<ExtendedWIEntry> => {
+const buildEntryUpdatePayload = (entry: ExtendedWIEntry, existingEntry?: ExtendedWIEntry): Partial<ExtendedWIEntry> => {
   const normalizedEntry = normalizeExtendedEntry(entry);
   const payload: Partial<ExtendedWIEntry> = {
     key: normalizedEntry.key,
     content: normalizedEntry.content,
     comment: normalizedEntry.comment,
   };
+
+  const revisionId = getEntryRevisionId(normalizedEntry);
+  if (revisionId && (!existingEntry || !getEntryRevisionId(existingEntry))) payload._wircRevisionId = revisionId;
 
   OPTIONAL_ENTRY_FIELDS.forEach((field) => {
     if (hasOwnEntryField(normalizedEntry, field)) {
@@ -128,13 +133,15 @@ const applyEntryToWorld = (
 ): 'added' | 'updated' | 'unchanged' => {
   const existingEntry = worldEntries.find((e) => e.uid === entry.uid);
   if (existingEntry) {
-    if (!hasEntryChanges(entry, existingEntry)) return 'unchanged';
-    Object.assign(existingEntry, buildEntryUpdatePayload(entry));
+    const needsRevisionId = !!getEntryRevisionId(entry) && !getEntryRevisionId(existingEntry);
+    if (!hasEntryChanges(entry, existingEntry) && !needsRevisionId) return 'unchanged';
+    Object.assign(existingEntry, buildEntryUpdatePayload(entry, existingEntry));
     return 'updated';
   }
 
-  const newEntry = st_createWorldInfoEntry(worldName, toWorldInfoSaveFormat(worldEntries));
-  if (!newEntry) throw new Error('Failed to create new World Info entry.');
+  const created = st_createWorldInfoEntry(worldName, toWorldInfoSaveFormat(worldEntries));
+  if (!created) throw new Error('Failed to create new World Info entry.');
+  const newEntry = withEntryRevisionId(created, getEntryRevisionId(entry));
   worldEntries.push(newEntry);
   Object.assign(newEntry, buildEntryUpdatePayload(entry));
   return 'added';
@@ -142,6 +149,61 @@ const applyEntryToWorld = (
 
 const getSuggestionTargetKey = (worldName: string, entry: ExtendedWIEntry) =>
   `${worldName}::${entry.uid}::${entry.comment ?? ''}`;
+
+// Cloning or editing another suggestion must not change this submitted snapshot's
+// identity. Keep the source world in the key because UIDs are book-local.
+const getSuggestionSnapshotKey = (worldName: string, entry: ExtendedWIEntry) => {
+  const snapshot = { ...entry };
+  // Opening a revision session stamps private metadata without changing the lore
+  // submitted by an already pending application. It must still be acknowledged.
+  delete snapshot._wircRevisionId;
+  return JSON.stringify([worldName, snapshot]);
+};
+
+const removeCompletedSuggestions = (
+  suggested: Record<string, ExtendedWIEntry[]>,
+  completed: Set<string>,
+): Record<string, ExtendedWIEntry[]> =>
+  Object.fromEntries(
+    Object.entries(suggested).map(([worldName, entries]) => [
+      worldName,
+      entries.filter((entry) => !completed.has(getSuggestionSnapshotKey(worldName, entry))),
+    ]),
+  );
+
+const suggestionForTarget = (entry: ExtendedWIEntry, copyExistingSource: boolean): ExtendedWIEntry => {
+  if (!copyExistingSource) return entry;
+  const copy = structuredClone(entry);
+  delete copy._wircRevisionId;
+  return copy;
+};
+
+// Only a confirmed materialization of this exact suggestion may move its
+// sessions to a UID allocated by the host. Ordinary copied markers cannot do so.
+const relocateSuggestionHistory = async (
+  sourceWorld: string,
+  suggestion: ExtendedWIEntry,
+  worldName: string,
+  saved: ExtendedWIEntry[],
+  allowRelocation: boolean,
+) => {
+  if (!allowRelocation) return;
+  const revisionId = getEntryRevisionId(suggestion);
+  if (!revisionId) return;
+  const materialized = saved.find((entry) => getEntryRevisionId(entry) === revisionId);
+  if (!materialized || (sourceWorld === worldName && materialized.uid === suggestion.uid)) return;
+  try {
+    const result = await relocateEntryRevisionSessions(
+      revisionId,
+      { worldName: sourceWorld, uid: suggestion.uid },
+      { worldName, uid: materialized.uid },
+    );
+    if (!result.persisted) throw result.error ?? new Error('History storage is unavailable.');
+  } catch (error) {
+    console.warn('The lorebook entry was saved, but its revision history could not be moved:', error);
+    st_echo('warning', 'Entry saved, but its revision history could not be moved to the assigned UID.');
+  }
+};
 
 export const MainPopup: FC = () => {
   const forceUpdate = useForceUpdate();
@@ -155,6 +217,35 @@ export const MainPopup: FC = () => {
   });
   const [allWorldNames, setAllWorldNames] = useState<string[]>([]);
   const [entriesGroupByWorldName, setEntriesGroupByWorldName] = useState<Record<string, ExtendedWIEntry[]>>({});
+  const committedEntriesRef = useRef(entriesGroupByWorldName);
+  committedEntriesRef.current = entriesGroupByWorldName;
+  const worldTransactionsRef = useRef(new Map<string, Promise<unknown>>());
+  // Deduplicate a submitted suggestion shared by overlapping Add / Apply All actions.
+  const activeApplyActionsRef = useRef(0);
+  const completedApplicationsRef = useRef(new Set<string>());
+  const pendingChatTargetRef = useRef<{
+    source: string;
+    promise: Promise<{ worldName: string | null; baseEntries?: ExtendedWIEntry[] }>;
+  } | null>(null);
+  const explicitOtherTargetsRef = useRef(new Set<string>());
+  const implicitChatTargetsRef = useRef(new Map<string, string>());
+  const publishWorldEntries = useCallback((worldName: string, entries: ExtendedWIEntry[]) => {
+    committedEntriesRef.current = { ...committedEntriesRef.current, [worldName]: entries };
+    setEntriesGroupByWorldName((previous) => ({ ...previous, [worldName]: entries }));
+  }, []);
+  const enqueueWorldTransaction = useCallback(<T,>(worldName: string, action: () => Promise<T>): Promise<T> => {
+    const previous = worldTransactionsRef.current.get(worldName) ?? Promise.resolve();
+    const result = previous.catch(() => {}).then(action);
+    worldTransactionsRef.current.set(worldName, result);
+    const cleanup = () => {
+      if (worldTransactionsRef.current.get(worldName) === result) worldTransactionsRef.current.delete(worldName);
+    };
+    void result.then(cleanup, cleanup);
+    return result;
+  }, []);
+  const finishApplyAction = () => {
+    if (--activeApplyActionsRef.current === 0) completedApplicationsRef.current.clear();
+  };
   const [groupMembers, setGroupMembers] = useState<Character[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -165,7 +256,17 @@ export const MainPopup: FC = () => {
   const [suggestionSearch, setSuggestionSearch] = useState('');
   const [suggestionTargetFilter, setSuggestionTargetFilter] = useState('all');
   const [suggestionSort, setSuggestionSort] = useState<'newest' | 'title' | 'target'>('newest');
-  const [suggestionTargetWorlds, setSuggestionTargetWorlds] = useState<Record<string, string>>({});
+  const suggestionTargetWorlds = session.suggestionTargetWorlds ?? {};
+  const setSuggestionTargetWorlds = useCallback(
+    (update: Record<string, string> | ((previous: Record<string, string>) => Record<string, string>)) => {
+      setSession((previous) => ({
+        ...previous,
+        suggestionTargetWorlds: typeof update === 'function' ? update(previous.suggestionTargetWorlds ?? {}) : update,
+        explicitOtherTargets: [...explicitOtherTargetsRef.current],
+      }));
+    },
+    [],
+  );
   const [previewMessages, setPreviewMessages] = useState<Message[]>([]);
   const [previewError, setPreviewError] = useState('');
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -185,10 +286,13 @@ export const MainPopup: FC = () => {
     const version = ++loadVersionRef.current;
     loadedSessionRef.current = null;
     setIsLoading(true);
+    committedEntriesRef.current = {};
     setEntriesGroupByWorldName({});
     setAllWorldNames([]);
     setGroupMembers([]);
     setSuggestionTargetWorlds({});
+    explicitOtherTargetsRef.current.clear();
+    implicitChatTargetsRef.current.clear();
 
     const avatar = getAvatar();
     const loaded = await loadMainSession(avatarKey);
@@ -209,6 +313,9 @@ export const MainPopup: FC = () => {
       selectedWorldNames: savedSession.selectedWorldNames ?? [],
       selectedEntryUids: savedSession.selectedEntryUids ?? {},
       regexIds: savedSession.regexIds ?? {},
+      suggestionTargetWorlds: savedSession.suggestionTargetWorlds ?? {},
+      implicitChatTargets: savedSession.implicitChatTargets ?? {},
+      explicitOtherTargets: savedSession.explicitOtherTargets ?? [],
     };
 
     let loadedEntries: Record<string, ExtendedWIEntry[]> = {};
@@ -239,6 +346,7 @@ export const MainPopup: FC = () => {
 
     if (version !== loadVersionRef.current) return;
     loadedEntries = normalizeEntriesByWorld(loadedEntries);
+    committedEntriesRef.current = loadedEntries;
     setEntriesGroupByWorldName(loadedEntries);
     const loadedWorldNames = Object.keys(loadedEntries);
     setAllWorldNames(loadedWorldNames);
@@ -264,6 +372,8 @@ export const MainPopup: FC = () => {
       }
     }
     initialSession.selectedEntryUids = validEntryUids;
+    implicitChatTargetsRef.current = new Map(Object.entries(initialSession.implicitChatTargets ?? {}));
+    explicitOtherTargetsRef.current = new Set(initialSession.explicitOtherTargets ?? []);
     setSession(initialSession);
 
     if (selected_group) {
@@ -341,32 +451,9 @@ export const MainPopup: FC = () => {
       includeNames: !!selected_group,
     };
 
-    if (!avatar) {
-      buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
-    } else {
-      switch (settings.contextToSend.messages.type) {
-        case 'none':
-          buildPromptOptions.messageIndexesBetween = { start: -1, end: -1 };
-          break;
-        case 'first':
-          buildPromptOptions.messageIndexesBetween = { start: 0, end: settings.contextToSend.messages.first ?? 10 };
-          break;
-        case 'last': {
-          const lastCount = settings.contextToSend.messages.last ?? 10;
-          const chatLength = globalContext.chat?.length ?? 0;
-          buildPromptOptions.messageIndexesBetween = {
-            end: Math.max(0, chatLength - 1),
-            start: Math.max(0, chatLength - lastCount),
-          };
-          break;
-        }
-        case 'range':
-          if (settings.contextToSend.messages.range) {
-            buildPromptOptions.messageIndexesBetween = settings.contextToSend.messages.range;
-          }
-          break;
-      }
-    }
+    buildPromptOptions.messageIndexesBetween = !avatar
+      ? { start: -1, end: -1 }
+      : getMessageIndexes(settings.contextToSend.messages, globalContext.chat?.length ?? 0);
 
     const promptSettings = structuredClone(settings.prompts);
     if (!settings.contextToSend.stDescription) delete (promptSettings as any).stDescription;
@@ -388,17 +475,20 @@ export const MainPopup: FC = () => {
 
   // Reflect a newly available lorebook in the local UI state without a full reload.
   // Pass seedEntries to register a freshly-copied book together with its entries.
-  const registerWorldLocally = useCallback((worldName: string, seedEntries?: ExtendedWIEntry[]) => {
-    setAllWorldNames((prev) => (prev.includes(worldName) ? prev : [...prev, worldName]));
-    setEntriesGroupByWorldName((prev) =>
-      prev[worldName] ? prev : { ...prev, [worldName]: seedEntries ? [...seedEntries] : [] },
-    );
-    setSession((prev) =>
-      prev.selectedWorldNames.includes(worldName)
-        ? prev
-        : { ...prev, selectedWorldNames: [...prev.selectedWorldNames, worldName] },
-    );
-  }, []);
+  const registerWorldLocally = useCallback(
+    (worldName: string, seedEntries?: ExtendedWIEntry[]) => {
+      setAllWorldNames((prev) => (prev.includes(worldName) ? prev : [...prev, worldName]));
+      if (!committedEntriesRef.current[worldName]) {
+        publishWorldEntries(worldName, seedEntries ? [...seedEntries] : []);
+      }
+      setSession((prev) =>
+        prev.selectedWorldNames.includes(worldName)
+          ? prev
+          : { ...prev, selectedWorldNames: [...prev.selectedWorldNames, worldName] },
+      );
+    },
+    [publishWorldEntries],
+  );
 
   // Returns the lorebook bound to the current chat, creating one if it doesn't exist yet.
   const resolveOrCreateChatLorebook = useCallback(async (): Promise<string | null> => {
@@ -468,7 +558,10 @@ export const MainPopup: FC = () => {
         st_echo('error', `Could not load "${sourceBook}" to fork a branch lorebook.`);
         return null;
       }
-      await saveWorldInfoChecked(worldName, { entries: data.entries });
+      const cloned = Object.values(data.entries).map((entry) =>
+        withEntryRevisionId(normalizeExtendedEntry(entry as ExtendedWIEntry), createRevisionId()),
+      );
+      await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(cloned));
       await context.updateWorldInfoList();
       if (!world_names.includes(worldName)) {
         st_echo('error', 'Failed to create the branch lorebook.');
@@ -479,14 +572,8 @@ export const MainPopup: FC = () => {
       context.updateChatMetadata({ [WI_METADATA_KEY]: worldName, [WIRC_CHAT_BOOK_OWNER]: chatId }, false);
       await context.saveMetadata();
 
-      // Reflect locally: new book with copied entries; drop the parent from the selected set.
-      // Prefer the in-memory copy, but fall back to the freshly-loaded file so an empty
-      // or missing local copy can never clobber the on-disk fork on the subsequent save.
-      const localSource = entriesGroupByWorldName[sourceBook];
-      const cloned =
-        localSource && localSource.length > 0
-          ? cloneEntriesByWorld({ [sourceBook]: localSource })[sourceBook]
-          : Object.values(data.entries).map((e) => normalizeExtendedEntry(e as ExtendedWIEntry));
+      // Seed exactly the snapshot copied to disk; another action may have changed
+      // the parent while metadata persistence was pending.
       registerWorldLocally(worldName, cloned);
       setSession((prev) =>
         prev.selectedWorldNames.includes(sourceBook)
@@ -498,7 +585,7 @@ export const MainPopup: FC = () => {
       st_echo('success', `Forked branch lorebook "${worldName}" from "${sourceBook}".`);
       return { name: worldName, baseEntries: cloned };
     },
-    [entriesGroupByWorldName, registerWorldLocally],
+    [registerWorldLocally],
   );
 
   // Resolves the lorebook an entry should be added to. Honors an explicit valid
@@ -506,37 +593,76 @@ export const MainPopup: FC = () => {
   // to reusing/creating the chat lorebook. May return copied baseEntries that the
   // caller must seed into the save so a freshly-forked copy isn't clobbered.
   const resolveTargetForAdd = useCallback(
-    async (requestedWorldName: string): Promise<{ worldName: string | null; baseEntries?: ExtendedWIEntry[] }> => {
-      const context = getChatContext();
-      const chatId = context.getCurrentChatId?.();
-      const boundBook = context.chatMetadata?.[WI_METADATA_KEY];
-      const owner = context.chatMetadata?.[WIRC_CHAT_BOOK_OWNER];
-      const isBranch = !!context.chatMetadata?.main_chat;
-
-      // 1. Explicit, valid, non-chat-book target -> respect it.
-      if (requestedWorldName && requestedWorldName !== boundBook && allWorldNames.includes(requestedWorldName)) {
-        return { worldName: requestedWorldName };
+    async (
+      requestedWorldName: string,
+      explicitOther = false,
+    ): Promise<{ worldName: string | null; baseEntries?: ExtendedWIEntry[] }> => {
+      const implicitTarget = implicitChatTargetsRef.current.get(requestedWorldName);
+      if (!explicitOther && implicitTarget && getChatContext().chatMetadata?.[WI_METADATA_KEY] === implicitTarget) {
+        return { worldName: implicitTarget };
       }
-
-      // 2. Branch still on an inherited chat book -> fork a branch-specific copy.
+      const pending = pendingChatTargetRef.current;
       if (
-        shouldForkBranchBook({
-          enabled: settings.branchLorebooks,
-          boundBook,
-          owner,
-          isBranch,
-          chatId,
-          worldNames: world_names,
-          requested: requestedWorldName,
-        })
+        pending &&
+        !explicitOther &&
+        (!requestedWorldName ||
+          requestedWorldName === pending.source ||
+          requestedWorldName === getChatContext().chatMetadata?.[WI_METADATA_KEY])
       ) {
-        const forked = await forkChatLorebookForBranch(boundBook as string, chatId as string);
-        if (forked) return { worldName: forked.name, baseEntries: forked.baseEntries };
-        return { worldName: null };
+        return pending.promise;
       }
+      const resolve = async (): Promise<{ worldName: string | null; baseEntries?: ExtendedWIEntry[] }> => {
+        const context = getChatContext();
+        const chatId = context.getCurrentChatId?.();
+        const boundBook = context.chatMetadata?.[WI_METADATA_KEY];
+        const owner = context.chatMetadata?.[WIRC_CHAT_BOOK_OWNER];
+        const isBranch = !!context.chatMetadata?.main_chat;
 
-      // 3. Default: reuse or create the chat lorebook.
-      return { worldName: await resolveOrCreateChatLorebook() };
+        // 1. Explicit, valid, non-chat-book target -> respect it.
+        if (requestedWorldName && requestedWorldName !== boundBook && allWorldNames.includes(requestedWorldName)) {
+          return { worldName: requestedWorldName };
+        }
+
+        // 2. Branch still on an inherited chat book -> fork a branch-specific copy.
+        if (
+          shouldForkBranchBook({
+            enabled: settings.branchLorebooks,
+            boundBook,
+            owner,
+            isBranch,
+            chatId,
+            worldNames: world_names,
+            requested: requestedWorldName,
+          })
+        ) {
+          const forked = await forkChatLorebookForBranch(boundBook as string, chatId as string);
+          if (forked) return { worldName: forked.name, baseEntries: forked.baseEntries };
+          return { worldName: null };
+        }
+
+        // 3. Default: reuse or create the chat lorebook.
+        return { worldName: await resolveOrCreateChatLorebook() };
+      };
+      const source = getChatContext().chatMetadata?.[WI_METADATA_KEY] ?? '';
+      const isChatTarget =
+        !requestedWorldName || requestedWorldName === source || !allWorldNames.includes(requestedWorldName);
+      const promise = resolve();
+      if (!isChatTarget) return promise;
+      const operation = { source, promise };
+      pendingChatTargetRef.current = operation;
+      try {
+        const resolved = await promise;
+        if (source && resolved.worldName && source !== resolved.worldName) {
+          implicitChatTargetsRef.current.set(source, resolved.worldName);
+          setSession((previous) => ({
+            ...previous,
+            implicitChatTargets: Object.fromEntries(implicitChatTargetsRef.current),
+          }));
+        }
+        return resolved;
+      } finally {
+        if (pendingChatTargetRef.current === operation) pendingChatTargetRef.current = null;
+      }
     },
     [allWorldNames, settings.branchLorebooks, forkChatLorebookForBranch, resolveOrCreateChatLorebook],
   );
@@ -544,34 +670,29 @@ export const MainPopup: FC = () => {
   const addEntry = useCallback(
     async (
       entry: ExtendedWIEntry,
-      selectedWorldName: string,
-      skipSave: boolean = false,
-      baseEntries?: ExtendedWIEntry[],
-    ): Promise<'added' | 'updated' | 'unchanged'> => {
-      // Shallow-copy the world map and deep-clone only the target world; the other
-      // worlds are never mutated, so cloning the entire collection is wasteful.
-      // Seed from baseEntries when provided (e.g. a freshly-forked copy not yet in
-      // local state) so the save preserves the copied entries instead of clobbering them.
-      const worldInfoCopy = { ...entriesGroupByWorldName };
-      worldInfoCopy[selectedWorldName] = structuredClone(baseEntries ?? worldInfoCopy[selectedWorldName] ?? []);
-
-      const status = applyEntryToWorld(worldInfoCopy[selectedWorldName], selectedWorldName, entry);
-      if (status === 'unchanged') {
-        return 'unchanged'; // Nothing to do.
-      }
-
-      if (!skipSave) {
-        await saveWorldInfoChecked(selectedWorldName, toWorldInfoSaveFormat(worldInfoCopy[selectedWorldName]));
-        globalContext.reloadWorldInfoEditor(selectedWorldName, true);
-      }
-
-      setEntriesGroupByWorldName((previous) => ({
-        ...previous,
-        [selectedWorldName]: worldInfoCopy[selectedWorldName],
-      }));
-      return status;
-    },
-    [entriesGroupByWorldName],
+      worldName: string,
+      sourceWorld: string,
+    ): Promise<'added' | 'updated' | 'unchanged'> =>
+      enqueueWorldTransaction(worldName, async () => {
+        const applicationKey = JSON.stringify([worldName, getSuggestionSnapshotKey(sourceWorld, entry)]);
+        if (completedApplicationsRef.current.has(applicationKey)) return 'unchanged';
+        // Read only when this transaction begins, after earlier saves published.
+        const sourceExists = (committedEntriesRef.current[sourceWorld] ?? []).some(
+          (stored) => stored.uid === entry.uid,
+        );
+        const worldEntries = structuredClone(committedEntriesRef.current[worldName] ?? []);
+        const candidate = suggestionForTarget(entry, sourceExists && sourceWorld !== worldName);
+        const status = applyEntryToWorld(worldEntries, worldName, candidate);
+        if (status !== 'unchanged') {
+          await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(worldEntries));
+          publishWorldEntries(worldName, worldEntries);
+          globalContext.reloadWorldInfoEditor(worldName, true);
+        }
+        completedApplicationsRef.current.add(applicationKey);
+        await relocateSuggestionHistory(sourceWorld, entry, worldName, worldEntries, !sourceExists);
+        return status;
+      }),
+    [enqueueWorldTransaction, publishWorldEntries],
   );
 
   const handleGeneration = useCallback(
@@ -622,7 +743,11 @@ export const MainPopup: FC = () => {
                 );
 
                 if (entryIndex !== -1) {
-                  newSuggested[worldName][entryIndex] = normalizeExtendedEntry(updatedEntry);
+                  const previousEntry = newSuggested[worldName][entryIndex];
+                  const revised = normalizeExtendedEntry(updatedEntry);
+                  delete revised._wircRevisionId;
+                  const revisionId = getEntryRevisionId(previousEntry);
+                  newSuggested[worldName][entryIndex] = revisionId ? withEntryRevisionId(revised, revisionId) : revised;
                 }
               }
               return { ...prev, suggestedEntries: newSuggested };
@@ -743,25 +868,32 @@ export const MainPopup: FC = () => {
 
   const handleAddSingleEntry = useCallback(
     async (entry: ExtendedWIEntry, worldName: string, selectedTargetWorld: string) => {
+      activeApplyActionsRef.current++;
+      const submitted = structuredClone(entry);
       try {
-        const { worldName: targetWorld, baseEntries } = await resolveTargetForAdd(selectedTargetWorld);
+        const { worldName: targetWorld } = await resolveTargetForAdd(
+          selectedTargetWorld,
+          explicitOtherTargetsRef.current.has(getSuggestionTargetKey(worldName, submitted)),
+        );
         if (!targetWorld) return;
-        const status = await addEntry(entry, targetWorld, false, baseEntries);
+        setSuggestionTargetWorlds((previous) => ({
+          ...previous,
+          [getSuggestionTargetKey(worldName, submitted)]: targetWorld,
+        }));
+        const status = await addEntry(submitted, targetWorld, worldName);
         if (status === 'unchanged') {
           st_echo('info', `No changes detected for "${entry.comment}". Entry was not updated.`);
         } else {
           st_echo('success', status === 'added' ? 'Entry added' : 'Entry updated');
         }
 
-        setSession((prev) => {
-          const newSuggested = { ...prev.suggestedEntries };
-          if (newSuggested[worldName]) {
-            newSuggested[worldName] = newSuggested[worldName].filter(
-              (e) => !(e.uid === entry.uid && e.comment === entry.comment),
-            );
-          }
-          return { ...prev, suggestedEntries: newSuggested };
-        });
+        setSession((prev) => ({
+          ...prev,
+          suggestedEntries: removeCompletedSuggestions(
+            prev.suggestedEntries,
+            new Set([getSuggestionSnapshotKey(worldName, submitted)]),
+          ),
+        }));
         setSuggestionTargetWorlds((prev) => {
           const key = getSuggestionTargetKey(worldName, entry);
           if (!(key in prev)) return prev;
@@ -772,6 +904,8 @@ export const MainPopup: FC = () => {
       } catch (error: any) {
         console.error(error);
         st_echo('error', `Failed to add entry: ${error.message}`);
+      } finally {
+        finishApplyAction();
       }
     },
     [addEntry, resolveTargetForAdd],
@@ -787,80 +921,103 @@ export const MainPopup: FC = () => {
     if (!confirmed) return;
 
     setIsGenerating(true);
+    activeApplyActionsRef.current++;
     try {
-      const workingEntries = { ...entriesGroupByWorldName };
-      const writableWorlds = new Set<string>();
-      const completed = new Set<ExtendedWIEntry>();
-      const persistedWorlds: Record<string, ExtendedWIEntry[]> = {};
-      const pendingByWorld = new Map<string, { entry: ExtendedWIEntry; status: 'added' | 'updated' | 'unchanged' }[]>();
+      const completed = new Set<string>();
       let addedCount = 0;
       let updatedCount = 0;
       let unchangedCount = 0;
       const inheritedBook = getChatContext().chatMetadata?.[WI_METADATA_KEY];
-      const isExplicitOther = (selected: string) => allWorldNames.includes(selected) && selected !== inheritedBook;
-      const targets = Object.entries(session.suggestedEntries).flatMap(([worldName, entries]) =>
+      const isExplicitOther = (selected: string, sourceWorld: string, entry: ExtendedWIEntry) => {
+        const pendingSource = pendingChatTargetRef.current?.source;
+        const implicitTarget = implicitChatTargetsRef.current.get(selected);
+        if (
+          (selected === pendingSource || (implicitTarget && implicitTarget === inheritedBook)) &&
+          !explicitOtherTargetsRef.current.has(getSuggestionTargetKey(sourceWorld, entry))
+        )
+          return false;
+        return allWorldNames.includes(selected) && selected !== inheritedBook;
+      };
+      const targets = Object.entries(session.suggestedEntries).flatMap(([sourceWorld, entries]) =>
         entries.map((entry) => ({
-          entry,
-          selected: suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName,
+          sourceWorld,
+          entry: structuredClone(entry),
+          selected: suggestionTargetWorlds[getSuggestionTargetKey(sourceWorld, entry)] ?? sourceWorld,
         })),
       );
+      const explicitTargets = new Set(
+        targets.filter(({ selected, sourceWorld, entry }) => isExplicitOther(selected, sourceWorld, entry)),
+      );
       let chatTargetWorld = '';
-      if (targets.some(({ selected }) => !isExplicitOther(selected))) {
+      if (targets.some((target) => !explicitTargets.has(target))) {
         const resolved = await resolveTargetForAdd('');
         if (!resolved.worldName) return;
         chatTargetWorld = resolved.worldName;
-        if (resolved.baseEntries && !workingEntries[chatTargetWorld]) {
-          workingEntries[chatTargetWorld] = structuredClone(resolved.baseEntries);
-          writableWorlds.add(chatTargetWorld);
-        }
       }
-
-      for (const { entry, selected } of targets) {
-        const worldName = isExplicitOther(selected) ? selected : chatTargetWorld;
-        try {
-          if (!writableWorlds.has(worldName)) {
-            workingEntries[worldName] = structuredClone(workingEntries[worldName] ?? []);
-            writableWorlds.add(worldName);
-          }
-          const status = applyEntryToWorld(workingEntries[worldName], worldName, entry);
-          const pending = pendingByWorld.get(worldName) ?? [];
-          pending.push({ entry, status });
-          pendingByWorld.set(worldName, pending);
-        } catch (error) {
-          st_echo('error', `Failed to process entry: ${entry.comment}`);
-        }
+      const targetsByWorld = new Map<string, typeof targets>();
+      const resolvedTargets: Record<string, string> = {};
+      for (const target of targets) {
+        const worldName = explicitTargets.has(target) ? target.selected : chatTargetWorld;
+        resolvedTargets[getSuggestionTargetKey(target.sourceWorld, target.entry)] = worldName;
+        const group = targetsByWorld.get(worldName) ?? [];
+        group.push(target);
+        targetsByWorld.set(worldName, group);
       }
+      // A successful fork changes the binding before content persistence. Keep
+      // that resolution even on failure so retry cannot target the inherited book.
+      setSuggestionTargetWorlds((previous) => ({ ...previous, ...resolvedTargets }));
 
-      for (const [worldName, pending] of pendingByWorld) {
+      for (const [worldName, worldTargets] of targetsByWorld) {
         try {
-          const hasChanges = pending.some(({ status }) => status !== 'unchanged');
-          if (hasChanges) {
-            await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(workingEntries[worldName]));
-            persistedWorlds[worldName] = workingEntries[worldName];
-          }
-          pending.forEach(({ entry, status }) => {
-            completed.add(entry);
+          const pending = await enqueueWorldTransaction(worldName, async () => {
+            const entries = structuredClone(committedEntriesRef.current[worldName] ?? []);
+            const results: {
+              target: (typeof targets)[number];
+              status: 'added' | 'updated' | 'unchanged';
+              key: string;
+              sourceExists: boolean;
+            }[] = [];
+            for (const target of worldTargets) {
+              const key = JSON.stringify([worldName, getSuggestionSnapshotKey(target.sourceWorld, target.entry)]);
+              try {
+                const sourceExists = (committedEntriesRef.current[target.sourceWorld] ?? []).some(
+                  (stored) => stored.uid === target.entry.uid,
+                );
+                const candidate = suggestionForTarget(target.entry, sourceExists && target.sourceWorld !== worldName);
+                const status = completedApplicationsRef.current.has(key)
+                  ? 'unchanged'
+                  : applyEntryToWorld(entries, worldName, candidate);
+                results.push({ target, status, key, sourceExists });
+              } catch (error) {
+                st_echo('error', `Failed to process entry: ${target.entry.comment}`);
+              }
+            }
+            if (results.some(({ status }) => status !== 'unchanged')) {
+              await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(entries));
+              publishWorldEntries(worldName, entries);
+              globalContext.reloadWorldInfoEditor(worldName, true);
+            }
+            results.forEach(({ key }) => completedApplicationsRef.current.add(key));
+            await Promise.all(
+              results.map(({ target, sourceExists }) =>
+                relocateSuggestionHistory(target.sourceWorld, target.entry, worldName, entries, !sourceExists),
+              ),
+            );
+            return results;
+          });
+          pending.forEach(({ target, status }) => {
+            completed.add(getSuggestionSnapshotKey(target.sourceWorld, target.entry));
             if (status === 'added') addedCount++;
             else if (status === 'updated') updatedCount++;
             else unchangedCount++;
           });
-          if (hasChanges) globalContext.reloadWorldInfoEditor(worldName, true);
         } catch (error) {
           st_echo('error', `Failed to save world: ${worldName}`);
         }
       }
-
-      setEntriesGroupByWorldName((previous) => ({ ...previous, ...persistedWorlds }));
-      // Remove only the submitted objects that succeeded. A user may have edited
-      // or generated additional suggestions while these writes were in flight.
       setSession((previous) => ({
         ...previous,
-        suggestedEntries: Object.fromEntries(
-          Object.entries(previous.suggestedEntries).map(([name, entries]) => [
-            name,
-            entries.filter((entry) => !completed.has(entry)),
-          ]),
-        ),
+        suggestedEntries: removeCompletedSuggestions(previous.suggestedEntries, completed),
       }));
       const remainingCount = totalEntries - completed.size;
       st_echo(
@@ -870,6 +1027,7 @@ export const MainPopup: FC = () => {
     } catch (error) {
       st_echo('error', `Failed to apply suggestions: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
+      finishApplyAction();
       setIsGenerating(false);
     }
   };
@@ -887,12 +1045,14 @@ export const MainPopup: FC = () => {
         selectedWorldNames: getAvatar() ? [...allWorldNames] : [],
         selectedEntryUids: {},
       }));
+      explicitOtherTargetsRef.current.clear();
       setSuggestionTargetWorlds({});
       st_echo('success', 'Reset successful');
     }
   };
 
   const handleRemoveEntry = (entry: ExtendedWIEntry, worldName: string, isBlacklist: boolean) => {
+    explicitOtherTargetsRef.current.delete(getSuggestionTargetKey(worldName, entry));
     setSession((prev) => {
       const newSession = { ...prev };
       if (isBlacklist) {
@@ -922,6 +1082,10 @@ export const MainPopup: FC = () => {
     updatedEntry: ExtendedWIEntry,
     updatedRegexIds?: Record<string, Partial<RegexScriptData>>,
   ) => {
+    const oldKey = getSuggestionTargetKey(worldName, originalEntry);
+    const newKey = getSuggestionTargetKey(worldName, updatedEntry);
+    if (oldKey !== newKey && explicitOtherTargetsRef.current.delete(oldKey))
+      explicitOtherTargetsRef.current.add(newKey);
     setSuggestionTargetWorlds((prev) => {
       const previousKey = getSuggestionTargetKey(worldName, originalEntry);
       const nextKey = getSuggestionTargetKey(worldName, updatedEntry);
@@ -981,42 +1145,106 @@ export const MainPopup: FC = () => {
     [entriesGroupByWorldName],
   );
 
-  const handleSaveEditorEntries = useCallback(
-    async (worldName: string, payloads: SaveEntryPayload[]) => {
-      // Only the edited world is mutated, so deep-clone just that one.
-      const worldInfoCopy = { ...entriesGroupByWorldName };
-      const worldEntries = structuredClone(worldInfoCopy[worldName] ?? []);
-
-      payloads.forEach(({ entry, originalUid }) => {
-        const normalizedEntry = normalizeExtendedEntry(entry);
-        const existingIndex = worldEntries.findIndex((item) => item.uid === originalUid);
-        if (existingIndex === -1) {
-          worldEntries.push(normalizedEntry);
-          return;
+  const handleEnsureEntryIdentity = useCallback(
+    async (worldName: string, draft: ExtendedWIEntry) => {
+      const original = committedEntriesRef.current[worldName]?.find((entry) => entry.uid === draft.uid);
+      if (!original) throw new Error('This entry no longer exists. Refresh the lorebook before revising it.');
+      return enqueueWorldTransaction(worldName, async () => {
+        // The host loader observes native editor saves too. Stamp only its current
+        // stored entry: a dirty editor draft must never be persisted by opening Revise.
+        const loaded = await globalContext.loadWorldInfo(worldName);
+        const rawLatest = loaded?.entries?.[draft.uid] as ExtendedWIEntry | undefined;
+        const latest = rawLatest && normalizeExtendedEntry(rawLatest);
+        const draftId = getEntryRevisionId(draft);
+        const latestId = latest && getEntryRevisionId(latest);
+        const originalId = getEntryRevisionId(original);
+        const sameBaseline = latest && new Set([...Object.keys(original), ...Object.keys(latest)]);
+        if (
+          !latest ||
+          (draftId && draftId !== latestId) ||
+          (originalId && originalId !== latestId) ||
+          (!draftId &&
+            !originalId &&
+            sameBaseline &&
+            [...sameBaseline].some(
+              (field) =>
+                field !== '_wircRevisionId' &&
+                JSON.stringify((original as any)[field]) !== JSON.stringify((latest as any)[field]),
+            ))
+        ) {
+          throw new Error('This entry changed or was replaced. Refresh the lorebook before applying its revision.');
         }
-
-        worldEntries[existingIndex] = {
-          ...worldEntries[existingIndex],
-          ...buildEntryUpdatePayload(normalizedEntry),
-          uid: worldEntries[existingIndex].uid,
-        };
+        const stamped = withEntryRevisionId(latest, latestId);
+        if (!latestId) {
+          const entries = Object.values(loaded!.entries).map((entry) =>
+            (entry as ExtendedWIEntry).uid === draft.uid ? stamped : normalizeExtendedEntry(entry as ExtendedWIEntry),
+          );
+          await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(entries));
+          publishWorldEntries(worldName, entries);
+        }
+        return withEntryRevisionId(draft, getEntryRevisionId(stamped));
       });
-
-      const normalizedEntries = worldEntries.map((entry) => normalizeExtendedEntry(entry));
-      worldInfoCopy[worldName] = normalizedEntries;
-      await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(normalizedEntries));
-      setEntriesGroupByWorldName((previous) => ({ ...previous, [worldName]: normalizedEntries }));
-      globalContext.reloadWorldInfoEditor(worldName, true);
     },
-    [entriesGroupByWorldName],
+    [enqueueWorldTransaction, publishWorldEntries],
   );
 
-  const handleReplaceEditorWorldEntries = useCallback(async (worldName: string, entries: ExtendedWIEntry[]) => {
-    const normalizedEntries = entries.map((entry) => normalizeExtendedEntry(entry));
-    await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(normalizedEntries));
-    setEntriesGroupByWorldName((previous) => ({ ...previous, [worldName]: normalizedEntries }));
-    globalContext.reloadWorldInfoEditor(worldName, true);
-  }, []);
+  const handleSaveEditorEntries = useCallback(
+    async (worldName: string, payloads: SaveEntryPayload[]) =>
+      enqueueWorldTransaction(worldName, async () => {
+        const worldEntries = structuredClone(committedEntriesRef.current[worldName] ?? []);
+        payloads.forEach(({ entry, originalUid }) => {
+          const normalizedEntry = normalizeExtendedEntry(entry);
+          const existingIndex = worldEntries.findIndex((item) => item.uid === originalUid);
+          if (existingIndex === -1) worldEntries.push(normalizedEntry);
+          else
+            worldEntries[existingIndex] = {
+              ...worldEntries[existingIndex],
+              ...buildEntryUpdatePayload(normalizedEntry, worldEntries[existingIndex]),
+              uid: originalUid,
+            };
+        });
+        await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(worldEntries));
+        publishWorldEntries(worldName, worldEntries);
+        globalContext.reloadWorldInfoEditor(worldName, true);
+      }),
+    [enqueueWorldTransaction, publishWorldEntries],
+  );
+
+  const handleReplaceEditorWorldEntries = useCallback(
+    async (worldName: string, entries: ExtendedWIEntry[]) => {
+      // Save All submits a whole editor draft. Apply its delta to the latest world
+      // so suggestions accepted while it was pending retain their own entries/edits.
+      const baseline = structuredClone(committedEntriesRef.current[worldName] ?? []);
+      const submitted = entries.map(normalizeExtendedEntry);
+      await enqueueWorldTransaction(worldName, async () => {
+        const previousByUid = new Map(baseline.map((entry) => [entry.uid, entry]));
+        const submittedByUid = new Map(submitted.map((entry) => [entry.uid, entry]));
+        const merged = structuredClone(committedEntriesRef.current[worldName] ?? [])
+          .filter((entry) => !previousByUid.has(entry.uid) || submittedByUid.has(entry.uid))
+          .map((entry) => {
+            const updated = submittedByUid.get(entry.uid);
+            const original = previousByUid.get(entry.uid);
+            if (!updated || !original) return entry;
+            const result = { ...entry };
+            const resultFields = result as unknown as Record<string, unknown>;
+            for (const field of new Set([...Object.keys(original), ...Object.keys(updated)])) {
+              if (JSON.stringify((updated as any)[field]) === JSON.stringify((original as any)[field])) continue;
+              if (Object.prototype.hasOwnProperty.call(updated, field)) resultFields[field] = (updated as any)[field];
+              else delete resultFields[field];
+            }
+            return result;
+          });
+        const mergedUids = new Set(merged.map((entry) => entry.uid));
+        submitted.forEach((entry) => {
+          if (!previousByUid.has(entry.uid) && !mergedUids.has(entry.uid)) merged.push(entry);
+        });
+        await saveWorldInfoChecked(worldName, toWorldInfoSaveFormat(merged));
+        publishWorldEntries(worldName, merged);
+        globalContext.reloadWorldInfoEditor(worldName, true);
+      });
+    },
+    [enqueueWorldTransaction, publishWorldEntries],
+  );
 
   const entriesForSelectionPopup = useMemo(() => {
     const result: Record<string, ExtendedWIEntry[]> = {};
@@ -1712,12 +1940,16 @@ export const MainPopup: FC = () => {
                           suggestionTargetWorlds[getSuggestionTargetKey(worldName, entry)] ?? worldName
                         }
                         sessionRegexIds={session.regexIds}
-                        onTargetWorldChange={(targetWorldName) =>
+                        onTargetWorldChange={(targetWorldName) => {
+                          const key = getSuggestionTargetKey(worldName, entry);
+                          if (targetWorldName !== getChatContext().chatMetadata?.[WI_METADATA_KEY])
+                            explicitOtherTargetsRef.current.add(key);
+                          else explicitOtherTargetsRef.current.delete(key);
                           setSuggestionTargetWorlds((prev) => ({
                             ...prev,
-                            [getSuggestionTargetKey(worldName, entry)]: targetWorldName,
-                          }))
-                        }
+                            [key]: targetWorldName,
+                          }));
+                        }}
                         onAdd={handleAddSingleEntry}
                         onRemove={handleRemoveEntry}
                         onContinue={handleGeneration}
@@ -1835,6 +2067,7 @@ export const MainPopup: FC = () => {
               onSaveEntries={handleSaveEditorEntries}
               onReplaceWorldEntries={handleReplaceEditorWorldEntries}
               onRefreshEntries={loadData}
+              onEnsureEntryIdentity={handleEnsureEntryIdentity}
               sessionForContext={session}
               contextToSend={settings.contextToSend}
             />

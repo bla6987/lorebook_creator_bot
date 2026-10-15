@@ -9,6 +9,8 @@ class Database implements SessionStorage {
   items = new Map<string, unknown>();
   failRead = false;
   failWrite = false;
+  async keys() { return [...this.items.keys()]; }
+  async removeItem(key: string) { this.items.delete(key); }
   async getItem<T>(key: string): Promise<T | null> {
     if (this.failRead) throw new Error('Read unavailable');
     return (structuredClone(this.items.get(key)) as T) ?? null;
@@ -46,7 +48,7 @@ describe('session migration', () => {
       expect(result.value).toEqual(value());
       expect(result.migrated).toBe(true);
       expect(result.writable).toBe(true);
-      expect(db.items.get(key)).toEqual(value());
+      expect(db.items.get(key)).toEqual(kind === 'main' ? value() : []);
       expect(legacy.getItem(key)).toBeNull();
     });
     test(`${kind}: quota failure returns history and retains original, then retries`, async () => {
@@ -128,7 +130,7 @@ test('legacy revision target identity migrates by world and UID while preserving
   const expected = { ...prior, targetEntryIdentifier: getReviseEntryIdentifier('Book::Section', 0) };
   const loaded = await loadReviseSessions(db, legacy);
   expect(loaded.value).toEqual([expected]);
-  expect(db.items.get(REVISE_SESSIONS_KEY)).toEqual([expected]);
+  expect(db.items.get(REVISE_SESSIONS_KEY)).toEqual([]);
   expect(legacy.getItem(REVISE_SESSIONS_KEY)).toBeNull();
 });
 

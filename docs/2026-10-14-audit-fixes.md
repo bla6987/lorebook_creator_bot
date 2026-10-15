@@ -1,5 +1,7 @@
 # Review fixes — 0.2.2
 
+The follow-up review and subsequent corrections are documented in [the 0.2.3 review fixes](2026-10-15-regression-fixes.md).
+
 The 21 findings from the October 14 review are addressed below. The review started at `ee52c1f`; the shipped `dist/index.js` was rebuilt after these changes.
 
 | # | Finding | Fix | Regression coverage in `src/test/` |
