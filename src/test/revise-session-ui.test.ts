@@ -297,3 +297,36 @@ test('deleting a session while its body loads cannot reopen the deleted session'
   expect(container.textContent).not.toContain('Loading selected history');
   expect(state.history.map(value => value.id)).toEqual(['B']);
 });
+
+test('deleting history during an Attach load cannot create a recovered copy afterward', async () => {
+  const replacement = { ...entry, _wircRevisionId: 'replacement-lifetime' };
+  let finish!: (value: { writable: boolean; value: ReviseSession }) => void;
+  state.loadBody.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await mount('Replacement', { target: { type: 'entry', worldName: 'Book', entry: replacement }, initialState: replacement });
+  await click('button[title="Attach a copy of verified history"]');
+  await click('.unverified-session-item .danger_button');
+  await act(async () => { finish({ writable: true, value: session('A') }); });
+  expect(state.save).toHaveBeenCalledTimes(1);
+  expect(state.save.mock.calls[0][0].type).toBe('delete');
+  expect(state.history.map(value => value.id)).toEqual(['B']);
+  expect(container.querySelector('.revise-session-manager')).not.toBeNull();
+});
+
+test('retrying an unavailable store shares one header reload across rapid clicks', async () => {
+  state.load.mockResolvedValueOnce({ writable: false, value: state.history.map(revisionSessionHeader) });
+  let finish!: (value: { writable: boolean; value: ReviseSession[] }) => void;
+  state.load.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await mount(); await select('A'); await send();
+  expect(state.save).not.toHaveBeenCalled();
+  await click('button[title="Back to sessions"]');
+  await act(async () => {
+    const retry = container.querySelector<HTMLButtonElement>('.revision-save-warning button')!;
+    retry.click(); retry.click();
+  });
+  expect(state.load).toHaveBeenCalledTimes(2);
+  expect(container.querySelector<HTMLButtonElement>('.revision-save-warning button')?.disabled).toBe(true);
+  await act(async () => { finish({ writable: true, value: state.history.map(revisionSessionHeader) }); });
+  expect(state.save).toHaveBeenCalledTimes(1);
+  expect(state.history[0].messages.some(message => message.stateSnapshot?.content === 'Revised')).toBe(true);
+  expect(container.querySelector('.revision-save-warning')).toBeNull();
+});

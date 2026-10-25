@@ -117,6 +117,8 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   // active save and one latest pending value; successful saves release both.
   const pendingSaves = useRef(new Map<string, PendingRevisionSave>());
   const [saveStatus, setSaveStatus] = useState({ pending: 0, failed: 0 });
+  const retryingRef = useRef(false);
+  const [retrying, setRetrying] = useState(false);
   const [identifiedEntry, setIdentifiedEntry] = useState<WIEntry | null>(null);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const currentEntry = target.type === 'entry' ? identifiedEntry ?? target.entry : undefined;
@@ -258,20 +260,28 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   }, [startPendingSave, updateSaveStatus]);
 
   const retryPendingSaves = async () => {
-    if (!historyWritable.current) {
-      const loaded = await loadReviseSessions(undefined, undefined, { headersOnly: true });
-      if (!mountedRef.current) return;
-      historyWritable.current = loaded.writable;
-      if (!loaded.writable) {
-        st_echo('warning', 'Revision storage is still unavailable. Unsaved history remains in this popup.');
-        return;
+    if (retryingRef.current) return;
+    retryingRef.current = true;
+    setRetrying(true);
+    try {
+      if (!historyWritable.current) {
+        const loaded = await loadReviseSessions(undefined, undefined, { headersOnly: true });
+        if (!mountedRef.current) return;
+        historyWritable.current = loaded.writable;
+        if (!loaded.writable) {
+          st_echo('warning', 'Revision storage is still unavailable. Unsaved history remains in this popup.');
+          return;
+        }
+        let refreshed = loaded.value;
+        for (const { mutation } of pendingSaves.current.values()) refreshed = applyReviseSessionMutation(refreshed, mutation);
+        sessionsRef.current = refreshed.map(revisionSessionHeader);
+        setAllSessions(sessionsRef.current);
       }
-      let refreshed = loaded.value;
-      for (const { mutation } of pendingSaves.current.values()) refreshed = applyReviseSessionMutation(refreshed, mutation);
-      sessionsRef.current = refreshed.map(revisionSessionHeader);
-      setAllSessions(sessionsRef.current);
+      for (const id of pendingSaves.current.keys()) startPendingSave(id);
+    } finally {
+      retryingRef.current = false;
+      if (mountedRef.current) setRetrying(false);
     }
-    for (const id of pendingSaves.current.keys()) startPendingSave(id);
   };
 
   const ensureEntryIdentity = async (): Promise<WIEntry | undefined> => {
@@ -376,12 +386,15 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
       'This history cannot be verified as belonging to the current entry. Its UID may have been reused after deletion. '
       + 'Only continue if you have verified that the saved history belongs to this entry. A separate copy will be attached.');
     if (!confirmed || !mountedRef.current) return;
+    const version = ++selectionVersion.current;
     setIsIdentifying(true);
     try {
       const identified = await ensureEntryIdentity();
-      if (!identified || !mountedRef.current) return;
+      if (!identified || !mountedRef.current || version !== selectionVersion.current
+        || !sessionsRef.current.some(current => current.id === session.id)) return;
       const original = await readSessionBody(session);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || version !== selectionVersion.current
+        || !sessionsRef.current.some(current => current.id === session.id)) return;
       const recovered = { ...structuredClone(original), id: `rs-${createRevisionId()}`,
         name: `${session.name} (recovered)`, createdAt: new Date().toISOString(),
         worldName: target.type === 'entry' ? target.worldName : session.worldName,
@@ -423,7 +436,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
 
   const saveNotice = saveStatus.failed > 0 && <div className="revision-save-warning" role="status">
     <p>Revision history has unsaved changes. Keep this popup open until saving succeeds; you can safely return to the session list.</p>
-    <STButton onClick={retryPendingSaves}>Retry saving history</STButton>
+    <STButton onClick={retryPendingSaves} disabled={retrying}>Retry saving history</STButton>
   </div>;
 
   if (activeSession) {
