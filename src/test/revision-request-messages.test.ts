@@ -26,7 +26,7 @@ const state = { input: null as any, plain: vi.fn(), structured: vi.fn(), buildPr
 let Chat: ComponentType<any>, root: Root, container: HTMLDivElement;
 function compile(file: string, modules: Record<string, any>) {
   const code = ts.transpileModule(readFileSync(file, 'utf8'), {
-    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS },
+    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const exports: Record<string, any> = {};
   new Function('require', 'exports', code)((name: string) => {

@@ -38,7 +38,8 @@ const saveToHistory = async (mutation: ReviseSessionMutation) => {
 let Manager: ComponentType<any>, root: Root, container: HTMLDivElement;
 function compile(file: string, modules: Record<string, any>) {
   const compiled = ts.transpileModule(readFileSync(file, 'utf8'), {
-    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS },
+    // Match the extension's modern target so Map iterators retain their runtime semantics.
+    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const exports: Record<string, any> = {};
   new Function('require', 'exports', compiled)((name: string) => {
