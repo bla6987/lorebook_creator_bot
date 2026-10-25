@@ -113,7 +113,7 @@ export function compactRevisionMessages(messages: ReviseMessage[], type: ReviseS
   for (const message of messages) {
     if (!hasRevisionState(message)) { compact.push(message); continue; }
     if (message.stateSnapshot === undefined && !stateId) throw new Error('Revision history is missing its checkpoint.');
-    const next = message.stateSnapshot !== undefined ? message.stateSnapshot
+    const next: ReviseState = message.stateSnapshot !== undefined ? message.stateSnapshot
       : applyDelta(state as Worlds, message.stateDelta!, stateId);
     const { stateSnapshot: _snapshot, stateDelta: _delta, ...rest } = message;
     const fields = !stateId || sinceCheckpoint >= REVISION_CHECKPOINT_INTERVAL - 1
