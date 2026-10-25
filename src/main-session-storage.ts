@@ -1,6 +1,6 @@
 import type { Session } from './generate.js';
 import { normalizeEntriesByWorld } from './components/lorebookEditorUtils.js';
-import { loadSession, saveSession, type SessionStorage, type LegacyStorage } from './session-storage.js';
+import { loadSession, saveLatestSession, type SessionStorage, type LegacyStorage } from './session-storage.js';
 
 export const getMainSessionKey = (avatarKey: string) => `worldInfoRecommend_${avatarKey}`;
 
@@ -31,4 +31,5 @@ function validateSession(value: unknown): Partial<Session> {
 export const loadMainSession = (key: string, storage?: SessionStorage, legacy?: LegacyStorage) =>
   loadSession(getMainSessionKey(key), {} as Partial<Session>, validateSession, storage, legacy);
 export const saveMainSession = (key: string, session: Session, storage?: SessionStorage) =>
-  saveSession(getMainSessionKey(key), session, storage);
+  saveLatestSession(getMainSessionKey(key), session, storage);
+

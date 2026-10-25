@@ -1,5 +1,5 @@
 import { getEntryKeys, normalizeExtendedEntry } from './lorebookEditorUtils.js';
-import { FC, useState, useEffect, useRef, useCallback } from 'react';
+import { FC, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { STButton, STTextarea, Popup, STInput } from 'sillytavern-utils-lib/components/react';
 import {
   ReviseMessage,
@@ -25,6 +25,8 @@ import * as Handlebars from 'handlebars';
 import { getRuntimeConnectionProfile } from '../api-settings.js';
 import { toWorldInfoSaveFormat } from './lorebookEditorUtils.js';
 
+import { getRevisionState, hasRevisionState, revisionStateFields, sameRevisionValue } from '../revision-state.js';
+
 const globalContext = SillyTavern.getContext();
 
 // Keep host/provider protocol fields (including instruct and tool metadata),
@@ -34,6 +36,7 @@ export const toRevisionRequestMessages = (messages: readonly ReviseMessage[]) =>
     id: _id,
     isInitial: _initial,
     stateSnapshot: _snapshot,
+    stateDelta: _delta,
     isStateUpdate: _update,
     source: _source,
     ...message
@@ -51,7 +54,7 @@ const calculateNewGlobalState = (
   prevState: Record<string, WIEntry[]>,
   response: GlobalRevisionResponse,
 ): Record<string, WIEntry[]> => {
-  const newState = structuredClone(prevState);
+  const newState = { ...prevState };
 
   // Process removals
   if (response.remove) {
@@ -67,8 +70,11 @@ const calculateNewGlobalState = (
   if (response.change) {
     for (const op of response.change) {
       const { worldName, originalName } = op;
-      const entryToChange = newState[worldName]?.find((e) => e.comment === originalName);
-      if (entryToChange) {
+      const index = newState[worldName]?.findIndex((e) => e.comment === originalName) ?? -1;
+      if (index >= 0) {
+        const entryToChange = { ...newState[worldName][index] };
+        newState[worldName] = [...newState[worldName]];
+        newState[worldName][index] = entryToChange;
         if (op.newName !== undefined) entryToChange.comment = op.newName;
         if (op.triggers !== undefined) entryToChange.key = Array.isArray(op.triggers) ? op.triggers : getEntryKeys(entryToChange);
         if (op.content !== undefined) entryToChange.content = op.content;
@@ -92,7 +98,7 @@ const calculateNewGlobalState = (
         newEntry.comment = name;
         newEntry.key = Array.isArray(triggers) ? triggers : [];
         newEntry.content = content;
-        newState[worldName].push(normalizeExtendedEntry(newEntry));
+        newState[worldName] = [...newState[worldName], normalizeExtendedEntry(newEntry)];
       }
     }
   }
@@ -174,6 +180,8 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
 }) => {
   const [messages, setMessages] = useState<ReviseMessage[]>(session.messages);
   const [userInput, setUserInput] = useState('');
+  const [historyPage, setHistoryPage] = useState(0);
+  const [showInitialContext, setShowInitialContext] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [diffData, setDiffData] = useState<{ before: ReviseState; after: ReviseState } | null>(null);
   const [isCurrentStateOpen, setIsCurrentStateOpen] = useState(false);
@@ -196,12 +204,13 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
   }, []);
 
   useEffect(() => {
+    setHistoryPage(0);
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const createAndAddStateUpdateMessage = useCallback(
     (currentMessages: ReviseMessage[], newState: ReviseState, lastState: ReviseState): ReviseMessage[] => {
-      if (JSON.stringify(lastState) === JSON.stringify(newState)) {
+      if (sameRevisionValue(lastState, newState)) {
         return currentMessages;
       }
 
@@ -353,11 +362,8 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           }
         }
 
-        const lastState =
-          messagesToSend
-            .slice(0, messagesToSend.length - (isRegeneration ? 0 : 1))
-            .reverse()
-            .find((m) => m.stateSnapshot)?.stateSnapshot ?? initialState;
+        const lastState = getRevisionState(messagesToSend, initialState,
+          messagesToSend.length - (isRegeneration ? 0 : 1));
 
         let stateContent = '';
         if (session.type === 'global') {
@@ -449,7 +455,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             id: `msg-${Date.now()}-ai`,
             role: 'assistant',
             content: justification,
-            stateSnapshot: newSnapshot,
+            ...revisionStateFields(messagesToSend, newSnapshot, session.type),
           };
 
           let finalMessages = [...messagesToSend, assistantMessage];
@@ -522,29 +528,18 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
 
   // The latest snapshot in the conversation (or the initial state if none yet).
   // Computed once and reused by apply / manual-edit / the render below.
-  const currentState =
-    messages
-      .slice()
-      .reverse()
-      .find((m) => m.stateSnapshot)?.stateSnapshot ?? initialState;
+  const currentState = useMemo(() => getRevisionState(messages, initialState), [messages, initialState]);
 
   const handleApply = () => {
-    onApply(currentState);
+    onApply(structuredClone(currentState));
     onBack();
   };
 
   const handleShowDiff = (messageId: string) => {
     const msgIndex = messages.findIndex((m) => m.id === messageId);
-    if (msgIndex < 0 || !messages[msgIndex].stateSnapshot) return;
-
-    const after = messages[msgIndex].stateSnapshot!;
-    let before = initialState;
-    for (let i = msgIndex - 1; i >= 0; i--) {
-      if (messages[i].stateSnapshot) {
-        before = messages[i].stateSnapshot!;
-        break;
-      }
-    }
+    if (msgIndex < 0 || !hasRevisionState(messages[msgIndex])) return;
+    const after = getRevisionState(messages, initialState, msgIndex + 1);
+    const before = getRevisionState(messages, initialState, msgIndex);
     setDiffData({ before, after });
   };
 
@@ -614,7 +609,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
       id: `msg-${Date.now()}-user-edit`,
       role: 'user',
       content: 'I made a change manually.',
-      stateSnapshot: newState,
+      ...revisionStateFields(messages, newState, session.type),
     };
 
     let finalMessages = [...messages, userEditMessage];
@@ -628,6 +623,10 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
   const visibleMessages = messages.filter((m) => !m.isStateUpdate);
   const initialMsgs = visibleMessages.filter((m) => m.isInitial);
   const chatMsgs = visibleMessages.filter((m) => !m.isInitial);
+  const historyPages = Math.max(1, Math.ceil(chatMsgs.length / 50));
+  const currentPage = Math.min(historyPage, historyPages - 1);
+  const historyEnd = Math.max(0, chatMsgs.length - currentPage * 50);
+  const renderedMessages = chatMsgs.slice(Math.max(0, historyEnd - 50), historyEnd);
   const activePluginProfile = getRuntimeConnectionProfile(settingsManager.getSettings().profileId);
 
   return (
@@ -681,10 +680,10 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
       </div>
       <div className="chat-messages">
         {initialMsgs.length > 0 && (
-          <details className="initial-messages-container">
+          <details className="initial-messages-container" onToggle={(event) => setShowInitialContext(event.currentTarget.open)}>
             <summary>View Initial Context</summary>
             <div className="initial-messages-content">
-              {initialMsgs.map((msg) =>
+              {showInitialContext && initialMsgs.map((msg) =>
                 editingMessageId === msg.id ? (
                   <div key={msg.id} className="message-editor">
                     <STTextarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} rows={5} />
@@ -726,7 +725,12 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
             </div>
           </details>
         )}
-        {chatMsgs.map((msg) =>
+        {historyPages > 1 && <div className="session-actions" aria-label="Revision history pages">
+          <STButton disabled={currentPage >= historyPages - 1} onClick={() => setHistoryPage(currentPage + 1)}>Older messages</STButton>
+          <span>{Math.max(1, historyEnd - 49)}–{historyEnd} of {chatMsgs.length}</span>
+          <STButton disabled={currentPage === 0} onClick={() => setHistoryPage(currentPage - 1)}>Newer messages</STButton>
+        </div>}
+        {renderedMessages.map((msg) =>
           editingMessageId === msg.id ? (
             <div key={msg.id} className="message-editor">
               <STTextarea value={editingContent} onChange={(e) => setEditingContent(e.target.value)} rows={3} />
@@ -742,7 +746,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
           ) : (
             <div key={msg.id} className={`message-bubble-wrapper ${msg.role}`}>
               <div className="message-actions">
-                {msg.role === 'user' && !msg.stateSnapshot && !isLoading && (
+                {msg.role === 'user' && !hasRevisionState(msg) && !isLoading && (
                   <STButton
                     className="message-action-button"
                     onClick={() => handleStartEdit(msg)}
@@ -751,7 +755,7 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
                     <i className="fa-solid fa-pencil"></i>
                   </STButton>
                 )}
-                {msg.stateSnapshot && !isLoading && (
+                {hasRevisionState(msg) && !isLoading && (
                   <STButton
                     className="message-action-button"
                     onClick={() => handleShowDiff(msg.id)}
@@ -863,3 +867,4 @@ export const ReviseSessionChat: FC<ReviseSessionChatProps> = ({
     </div>
   );
 };
+

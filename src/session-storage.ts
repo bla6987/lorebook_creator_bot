@@ -76,3 +76,36 @@ export async function saveSession<T>(
     return { persisted: true };
   } catch (error) { return { persisted: false, error }; }
 }
+
+interface PendingSave {
+  snapshot: unknown;
+  result: Promise<SaveResult>;
+}
+const latestWrites = new WeakMap<SessionStorage, Map<string, PendingSave>>();
+
+/** Full-state autosaves may supersede a queued write, but never an active write.
+ * Snapshot at the call boundary so later caller mutations cannot alter a save.
+ * Only one pending payload per key survives, and all callers observe its result.
+ * Migration/create/delete writes continue to use the strictly ordered API above.
+ */
+export function saveLatestSession<T>(key: string, value: T, storage?: SessionStorage): Promise<SaveResult> {
+  try {
+    storage ??= getStorage();
+    const snapshot = structuredClone(value);
+    let pending = latestWrites.get(storage);
+    if (!pending) { pending = new Map(); latestWrites.set(storage, pending); }
+    const existing = pending.get(key);
+    if (existing) { existing.snapshot = snapshot; return existing.result; }
+    const job: PendingSave = { snapshot, result: Promise.resolve({ persisted: false }) };
+    job.result = ordered(storage, key, async () => {
+      if (pending!.get(key) === job) pending!.delete(key);
+      const payload = job.snapshot;
+      job.snapshot = undefined;
+      await storage!.setItem(key, payload);
+      return { persisted: true };
+    }).catch(error => ({ persisted: false, error }));
+    pending.set(key, job);
+    return job.result;
+  } catch (error) { return Promise.resolve({ persisted: false, error }); }
+}
+

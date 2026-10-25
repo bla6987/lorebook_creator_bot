@@ -308,7 +308,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
   const normalizedEntries = useMemo(() => normalizeEntriesByWorld(entriesGroupByWorldName), [entriesGroupByWorldName]);
   const worldNames = useMemo(() => Object.keys(normalizedEntries), [normalizedEntries]);
   const [draftEntries, setDraftEntries] = useState<Record<string, ExtendedWIEntry[]>>(() =>
-    structuredClone(normalizedEntries),
+    normalizedEntries,
   );
   const [selectedWorldName, setSelectedWorldName] = useState(() => {
     const stored = typeof localStorage === 'undefined' ? '' : localStorage.getItem(SELECTED_WORLD_STORAGE_KEY) || '';
@@ -336,6 +336,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
       : 'original';
   });
   const [searchText, setSearchText] = useState('');
+  const [entryPage, setEntryPage] = useState(0);
   const [firstWordFilter, setFirstWordFilter] = useState(NO_FIRST_WORD_FILTER);
   const [categoryFilter, setCategoryFilter] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -387,17 +388,17 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
           );
           const merged = entries.map((entry) => {
             const draft = retained.get(entry.uid);
-            if (!draft) return structuredClone(entry);
+            if (!draft) return entry;
             const baseline = previousBaseline[worldName]?.find((old) => old.uid === entry.uid);
             if (!baseline) return draft;
             // Keep only fields the user changed. A save from another action may
             // have updated untouched fields on this very same entry meanwhile.
-            const next = structuredClone(entry) as ExtendedWIEntry & Record<string, unknown>;
+            const next = { ...entry } as ExtendedWIEntry & Record<string, unknown>;
             const oldFields = baseline as ExtendedWIEntry & Record<string, unknown>;
             const draftFields = draft as ExtendedWIEntry & Record<string, unknown>;
             for (const field of new Set([...Object.keys(baseline), ...Object.keys(draft)])) {
               if (field === '_wircRevisionId' || JSON.stringify(draftFields[field]) === JSON.stringify(oldFields[field])) continue;
-              if (field in draftFields) next[field] = structuredClone(draftFields[field]);
+              if (field in draftFields) next[field] = draftFields[field];
               else delete next[field];
             }
             return next;
@@ -473,6 +474,11 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     }
     return sortEntries(entries, sortSelection);
   }, [activeAssignments, categoryFilter, firstWordFilter, searchFilteredEntries, sortSelection]);
+
+  const entryPages = Math.max(1, Math.ceil(visibleEntries.length / 50));
+  const currentEntryPage = Math.min(entryPage, entryPages - 1);
+  const pageEntries = visibleEntries.slice(currentEntryPage * 50, (currentEntryPage + 1) * 50);
+  useEffect(() => { setEntryPage(0); }, [selectedWorldName, searchText, firstWordFilter, categoryFilter, sortSelection]);
 
   const selectedEntries = useMemo(
     () => visibleEntries.filter((entry) => selectedIds.has(getEntryIdentity(selectedWorldName, entry.uid))),
@@ -715,7 +721,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
       'Discard unsaved editor changes and draft deletions?',
     );
     if (!confirmed) return;
-    setDraftEntries(structuredClone(normalizedEntries));
+    setDraftEntries(normalizedEntries);
     setDirtyIds(new Set());
     setDeletedIds(new Set());
     setSelectedIds(new Set());
@@ -1124,15 +1130,20 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
         <section className="lorebook-entry-list">
           <div className="entry-list-summary">
             <span>
-              Showing {visibleEntries.length} of {activeEntries.length} entries
+              Showing {visibleEntries.length ? currentEntryPage * 50 + 1 : 0}–{Math.min((currentEntryPage + 1) * 50, visibleEntries.length)} of {visibleEntries.length} matching entries ({activeEntries.length} total)
             </span>
             <span>{selectedEntries.length} selected</span>
             {deletedIds.size > 0 && <span>{deletedIds.size} draft deleted</span>}
           </div>
+          {entryPages > 1 && <div className="session-actions" aria-label="Lorebook entry pages">
+            <STButton disabled={currentEntryPage === 0} onClick={() => setEntryPage(currentEntryPage - 1)}>Previous entries</STButton>
+            <span>Page {currentEntryPage + 1} of {entryPages}</span>
+            <STButton disabled={currentEntryPage >= entryPages - 1} onClick={() => setEntryPage(currentEntryPage + 1)}>Next entries</STButton>
+          </div>}
           {visibleEntries.length === 0 ? (
             <div className="card empty-state">No entries match the current filters.</div>
           ) : (
-            visibleEntries.map((entry) => (
+            pageEntries.map((entry) => (
               <EntryEditor
                 key={`${selectedWorldName}::${entry.uid}`}
                 entry={entry}
@@ -1187,3 +1198,4 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     </div>
   );
 };
+

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 import { PromptEngineeringMode } from './settings.js';
 import { Message } from 'sillytavern-utils-lib';
+import type { RevisionStateDelta } from './revision-state.js';
 
 export const REVISE_SCHEMA_NAME = {
   ENTRY: 'EntryRevision',
@@ -58,6 +59,7 @@ export interface ReviseMessage extends Message {
   id: string;
   isInitial?: boolean;
   stateSnapshot?: ReviseState;
+  stateDelta?: RevisionStateDelta;
   isStateUpdate?: boolean;
 }
 
@@ -73,6 +75,8 @@ export interface ReviseSession {
   worldName?: string;
   createdAt: string;
   messages: ReviseMessage[];
+  /** In-memory list entries omit bodies; never persisted as session state. */
+  messagesLoaded?: boolean;
   context: {
     mainContextTemplatePreset: string;
   };

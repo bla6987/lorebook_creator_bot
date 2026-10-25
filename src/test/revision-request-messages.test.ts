@@ -1,3 +1,4 @@
+import * as revisionState from '../revision-state.js';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import * as React from 'react';
 import * as jsxRuntime from 'react/jsx-runtime';
@@ -41,6 +42,7 @@ beforeAll(() => {
     chat: [], CONNECT_API_MAP: { test: { selected: 'openai' } }, substituteParams: (text: string) => text,
   }) });
   const modules: Record<string, any> = {
+    '../revision-state.js': revisionState,
     react: React, 'react/jsx-runtime': jsxRuntime, handlebars: Handlebars,
     'sillytavern-utils-lib/components/react': {
       STButton: (props: any) => createElement('button', props),

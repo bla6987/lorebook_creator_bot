@@ -1,3 +1,4 @@
+import * as revisionState from '../revision-state.js';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import * as React from 'react';
 import * as jsxRuntime from 'react/jsx-runtime';
@@ -7,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import * as Handlebars from 'handlebars';
 import * as editorUtils from '../components/lorebookEditorUtils.js';
-import { applyReviseSessionMutation, getReviseEntryIdentifier, type ReviseSessionMutation } from '../revise-session-storage.js';
+import { applyReviseSessionMutation, getReviseEntryIdentifier, revisionSessionHeader, type ReviseSessionMutation } from '../revise-session-storage.js';
 import * as revisionIdentity from '../revise-entry-identity.js';
 import { getMessageIndexes } from '../message-ranges.js';
 import type { ReviseSession } from '../revise-types.js';
@@ -16,7 +17,7 @@ import type { WIEntry } from 'sillytavern-utils-lib/types/world-info';
 const entry = { uid: 1, comment: 'Name', content: 'Original', key: ['Name'], disable: false,
   keysecondary: [], _wircRevisionId: 'entry-lifetime' } as WIEntry;
 const state = {
-  load: vi.fn(), save: vi.fn(), structured: vi.fn(), plain: vi.fn(),
+  load: vi.fn(), loadBody: vi.fn(), save: vi.fn(), structured: vi.fn(), plain: vi.fn(),
   settings: { profileId: 'profile', prompts: {}, maxResponseToken: 100 },
   input: null as any,
   apply: vi.fn(), confirm: vi.fn(), ensure: vi.fn(), buildPrompt: vi.fn(),
@@ -51,6 +52,7 @@ beforeAll(() => {
     Popup: { show: { confirm: state.confirm } },
   }) });
   const modules: Record<string, any> = {
+    '../revision-state.js': revisionState,
     react: React, 'react/jsx-runtime': jsxRuntime, handlebars: Handlebars,
     'sillytavern-utils-lib/components/react': {
       STButton: (props: any) => createElement('button', props),
@@ -69,7 +71,7 @@ beforeAll(() => {
     'sillytavern-utils-lib': { buildPrompt: state.buildPrompt }, 'sillytavern-utils-lib/types/popup': { POPUP_TYPE: {} },
     '../revise-prompt-builder.js': {},
     '../revise-session-storage.js': { getReviseEntryIdentifier, applyReviseSessionMutation,
-      loadReviseSessions: state.load, persistReviseSessionMutation: state.save },
+      loadReviseSessions: state.load, loadReviseSession: state.loadBody, revisionSessionHeader, persistReviseSessionMutation: state.save },
     '../revise-entry-identity.js': revisionIdentity,
     '../message-ranges.js': { getMessageIndexes },
   };
@@ -81,7 +83,8 @@ beforeAll(() => {
 });
 beforeEach(() => {
   state.history = [session('A'), session('B')];
-  state.load.mockReset().mockImplementation(async () => ({ value: structuredClone(state.history), writable: true }));
+  state.load.mockReset().mockImplementation(async () => ({ value: structuredClone(state.history).map(revisionSessionHeader), writable: true }));
+  state.loadBody.mockReset().mockImplementation(async (id: string) => ({ value: structuredClone(state.history.find(item => item.id === id)), writable: true }));
   state.save.mockReset().mockImplementation(async (mutation: ReviseSessionMutation) => {
     state.history = applyReviseSessionMutation(state.history, mutation);
     return { persisted: true };

@@ -63,7 +63,7 @@ test('repeated message edits keep only one current snapshot per field', async ()
       messages: [{ id: 'current', role: 'assistant', content: 'x'.repeat(1000 + index) }],
     } }, a);
   }
-  expect([...db.items.keys()].filter(k => k.startsWith(`${REVISE_SESSIONS_KEY}.records.`))).toHaveLength(2);
+  expect([...db.items.keys()].filter(k => k.startsWith(`${REVISE_SESSIONS_KEY}.records.`))).toHaveLength(3);
   expect((await loadReviseSessions(a, noLegacy)).value[0].messages[0].content).toHaveLength(1029);
 });
 

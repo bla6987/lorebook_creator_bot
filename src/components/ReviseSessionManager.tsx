@@ -9,11 +9,56 @@ import { st_echo, selected_group, this_chid } from 'sillytavern-utils-lib/config
 import { BuildPromptOptions } from 'sillytavern-utils-lib';
 import { Session } from '../generate.js';
 import { getRuntimeConnectionProfile } from '../api-settings.js';
-import { applyReviseSessionMutation, getReviseEntryIdentifier, loadReviseSessions, persistReviseSessionMutation, type ReviseSessionMutation } from '../revise-session-storage.js';
+import { applyReviseSessionMutation, getReviseEntryIdentifier, loadReviseSessions, loadReviseSession, revisionSessionHeader, persistReviseSessionMutation, type ReviseSessionMutation } from '../revise-session-storage.js';
 import { createRevisionId, getEntryRevisionId, withEntryRevisionId } from '../revise-entry-identity.js';
 import { getMessageIndexes } from '../message-ranges.js';
 
+import { getRevisionState, hasRevisionState } from '../revision-state.js';
+
 const globalContext = SillyTavern.getContext();
+
+async function sessionBody(session: ReviseSession): Promise<ReviseSession> {
+  if (session.messagesLoaded !== false) return session;
+  const loaded = await loadReviseSession(session.id);
+  if (!loaded.writable || !loaded.value) throw loaded.error ?? new Error('Saved session is unavailable. Reopen history to refresh.');
+  return loaded.value;
+}
+
+function RevisionHistoryPreview({ session }: { session: ReviseSession }) {
+  const [open, setOpen] = useState(false);
+  const [body, setBody] = useState<ReviseSession | null>(null);
+  const [error, setError] = useState('');
+  const [page, setPage] = useState(0);
+  const [stateId, setStateId] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    setBody(null); setError(''); setStateId(null); setPage(0);
+    if (open) void sessionBody(session).then(value => { if (current) setBody(value); })
+      .catch(reason => { if (current) setError(String(reason?.message ?? reason)); });
+    return () => { current = false; };
+  }, [open, session.id]);
+  const messages = body?.messages ?? [];
+  const selected = stateId ? messages.findIndex(message => message.id === stateId) : -1;
+  const preview = useMemo(() => selected < 0 ? null : getRevisionState(messages, {}, selected + 1), [body, selected]);
+  return <details onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>Preview saved history</summary>
+    {open && <>
+      {error ? <p>{error}</p> : !body ? <p>Loading history...</p> : <>
+        {messages.slice(page * 50, (page + 1) * 50).map(message => <div key={message.id}>
+          <strong>{message.role}</strong>
+          <pre style={{ whiteSpace: 'pre-wrap' }}>{message.content}</pre>
+          {hasRevisionState(message) && <STButton onClick={() => setStateId(stateId === message.id ? null : message.id)}>Show revision state</STButton>}
+        </div>)}
+        {messages.length > 50 && <div className="session-actions">
+          <STButton disabled={!page} onClick={() => setPage(page - 1)}>Previous messages</STButton>
+          <span>Page {page + 1} of {Math.ceil(messages.length / 50)}</span>
+          <STButton disabled={(page + 1) * 50 >= messages.length} onClick={() => setPage(page + 1)}>Next messages</STButton>
+        </div>}
+        {preview && <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(preview, null, 2)}</pre>}
+      </>}
+    </>}
+  </details>;
+}
 
 export interface EntryRevisionApplyArgs {
   type: 'entry';
@@ -49,6 +94,10 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   const [allSessions, setAllSessions] = useState<ReviseSession[]>([]);
   const [activeSession, setActiveSession] = useState<ReviseSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
+  const selectionVersion = useRef(0);
+  const [sessionPage, setSessionPage] = useState(0);
+  const [unverifiedPage, setUnverifiedPage] = useState(0);
   const historyWritable = useRef(false);
   const mountedRef = useRef(false);
   const sessionsRef = useRef<ReviseSession[]>([]);
@@ -59,6 +108,8 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   const entryRevisionId = currentEntry ? getEntryRevisionId(currentEntry) : undefined;
 
   const selectSession = (session: ReviseSession | null) => {
+    selectionVersion.current++;
+    setLoadingSessionId(null);
     activeSessionIdRef.current = session?.id ?? null;
     setActiveSession(session);
   };
@@ -73,7 +124,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   useEffect(() => {
     mountedRef.current = true;
     let mounted = true;
-    void loadReviseSessions().then((result) => {
+    void loadReviseSessions(undefined, undefined, { headersOnly: true }).then((result) => {
       if (!mounted) return;
       historyWritable.current = result.writable;
       sessionsRef.current = result.value;
@@ -86,7 +137,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
       }
       setIsLoading(false);
     });
-    return () => { mounted = false; mountedRef.current = false; historyWritable.current = false; };
+    return () => { mounted = false; mountedRef.current = false; historyWritable.current = false; selectionVersion.current++; };
   }, []);
 
   const filteredSessions = useMemo(() => {
@@ -106,9 +157,14 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
       && (!entryRevisionId || session.targetEntryRevisionId !== entryRevisionId)) : [],
   [allSessions, target.type, targetIdentifier, entryRevisionId]);
 
+  useEffect(() => {
+    setSessionPage(page => Math.min(page, Math.max(0, Math.ceil(filteredSessions.length / 50) - 1)));
+    setUnverifiedPage(page => Math.min(page, Math.max(0, Math.ceil(unverifiedSessions.length / 50) - 1)));
+  }, [filteredSessions.length, unverifiedSessions.length]);
+
   const saveMutation = useCallback((mutation: ReviseSessionMutation) => {
     if (!mountedRef.current) return;
-    const updatedSessions = applyReviseSessionMutation(sessionsRef.current, mutation);
+    const updatedSessions = applyReviseSessionMutation(sessionsRef.current, mutation).map(revisionSessionHeader);
     sessionsRef.current = updatedSessions;
     setAllSessions(updatedSessions);
     if (!historyWritable.current) {
@@ -191,8 +247,18 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     }
   };
 
-  const handleSelectSession = (session: ReviseSession) => {
-    selectSession(session);
+  const handleSelectSession = async (session: ReviseSession) => {
+    const version = ++selectionVersion.current;
+    setLoadingSessionId(session.id);
+    try {
+      const body = await sessionBody(session);
+      if (mountedRef.current && version === selectionVersion.current) selectSession(body);
+    } catch (error) {
+      if (mountedRef.current && version === selectionVersion.current) {
+        setLoadingSessionId(null);
+        st_echo('warning', `Could not open history: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   };
 
   const handleDeleteSession = async (sessionId: string) => {
@@ -219,7 +285,9 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     try {
       const identified = await ensureEntryIdentity();
       if (!identified || !mountedRef.current) return;
-      const recovered = { ...structuredClone(session), id: `rs-${createRevisionId()}`,
+      const original = await sessionBody(session);
+      if (!mountedRef.current) return;
+      const recovered = { ...structuredClone(original), id: `rs-${createRevisionId()}`,
         name: `${session.name} (recovered)`, createdAt: new Date().toISOString(),
         worldName: target.type === 'entry' ? target.worldName : session.worldName,
         targetEntryIdentifier: targetIdentifier,
@@ -310,7 +378,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
             No sessions found. Create one to get started.
           </p>
         ) : (
-          filteredSessions.map((session) => (
+          filteredSessions.slice(sessionPage * 50, (sessionPage + 1) * 50).map((session) => (
             <div key={session.id} className="session-item">
               <div className="session-info" onClick={() => handleSelectSession(session)}>
                 <span className="session-name">{session.name}</span>
@@ -323,23 +391,20 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
           ))
         )}
       </div>
+      {loadingSessionId && <p className="subtle">Loading selected history...</p>}
+      {filteredSessions.length > 50 && <div className="session-actions">
+        <STButton disabled={!sessionPage} onClick={() => setSessionPage(sessionPage - 1)}>Previous sessions</STButton>
+        <span>Page {sessionPage + 1} of {Math.ceil(filteredSessions.length / 50)}</span>
+        <STButton disabled={(sessionPage + 1) * 50 >= filteredSessions.length} onClick={() => setSessionPage(sessionPage + 1)}>Next sessions</STButton>
+      </div>}
       {unverifiedSessions.length > 0 && (
         <section className="unverified-revision-history">
           <h3>Unverified saved history</h3>
           <p>These sessions may belong to a deleted entry that used this UID. Preview them before explicitly attaching a copy.</p>
-          {unverifiedSessions.map((session) => (
+          {unverifiedSessions.slice(unverifiedPage * 50, (unverifiedPage + 1) * 50).map((session) => (
             <div key={session.id} className="unverified-session-item">
               <strong>{session.name}</strong>
-              <details>
-                <summary>Preview saved history</summary>
-                {session.messages.map((message) => (
-                  <div key={message.id}>
-                    <strong>{message.role}</strong>
-                    <pre style={{ whiteSpace: 'pre-wrap' }}>{message.content}</pre>
-                    {message.stateSnapshot && <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(message.stateSnapshot, null, 2)}</pre>}
-                  </div>
-                ))}
-              </details>
+              <RevisionHistoryPreview session={session} />
               <STButton onClick={() => handleRecoverSession(session)} disabled={isIdentifying} title="Attach a copy of verified history">
                 Attach history
               </STButton>
@@ -348,6 +413,11 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
               </STButton>
             </div>
           ))}
+          {unverifiedSessions.length > 50 && <div className="session-actions">
+            <STButton disabled={!unverifiedPage} onClick={() => setUnverifiedPage(unverifiedPage - 1)}>Previous saved sessions</STButton>
+            <span>Page {unverifiedPage + 1} of {Math.ceil(unverifiedSessions.length / 50)}</span>
+            <STButton disabled={(unverifiedPage + 1) * 50 >= unverifiedSessions.length} onClick={() => setUnverifiedPage(unverifiedPage + 1)}>Next saved sessions</STButton>
+          </div>}
         </section>
       )}
       <div className="session-actions">
@@ -358,3 +428,4 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     </div>
   );
 };
+
