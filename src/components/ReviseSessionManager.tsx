@@ -24,7 +24,9 @@ async function sessionBody(session: ReviseSession): Promise<ReviseSession> {
   return loaded.value;
 }
 
-function RevisionHistoryPreview({ session }: { session: ReviseSession }) {
+function RevisionHistoryPreview({ session, loadBody }: {
+  session: ReviseSession; loadBody: (session: ReviseSession) => Promise<ReviseSession>;
+}) {
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState<ReviseSession | null>(null);
   const [error, setError] = useState('');
@@ -33,10 +35,10 @@ function RevisionHistoryPreview({ session }: { session: ReviseSession }) {
   useEffect(() => {
     let current = true;
     setBody(null); setError(''); setStateId(null); setPage(0);
-    if (open) void sessionBody(session).then(value => { if (current) setBody(value); })
+    if (open) void loadBody(session).then(value => { if (current) setBody(value); })
       .catch(reason => { if (current) setError(String(reason?.message ?? reason)); });
     return () => { current = false; };
-  }, [open, session.id]);
+  }, [open, session.id, loadBody]);
   const messages = body?.messages ?? [];
   const selected = stateId ? messages.findIndex(message => message.id === stateId) : -1;
   const preview = useMemo(() => selected < 0 ? null : getRevisionState(messages, {}, selected + 1), [body, selected]);
@@ -81,6 +83,14 @@ type ReviseSessionManagerProps = SharedReviseSessionManagerProps & (
       onEnsureEntryIdentity?: (entry: WIEntry) => Promise<WIEntry> }
 );
 
+interface PendingRevisionSave {
+  mutation: ReviseSessionMutation;
+  body?: ReviseSession;
+  version: number;
+  saving: boolean;
+  failed: boolean;
+}
+
 export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   target,
   initialState,
@@ -102,6 +112,11 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
   const mountedRef = useRef(false);
   const sessionsRef = useRef<ReviseSession[]>([]);
   const activeSessionIdRef = useRef<string | null>(null);
+  const activeSessionRef = useRef<ReviseSession | null>(null);
+  // Only unacknowledged histories stay resident after Back. A session has one
+  // active save and one latest pending value; successful saves release both.
+  const pendingSaves = useRef(new Map<string, PendingRevisionSave>());
+  const [saveStatus, setSaveStatus] = useState({ pending: 0, failed: 0 });
   const [identifiedEntry, setIdentifiedEntry] = useState<WIEntry | null>(null);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const currentEntry = target.type === 'entry' ? identifiedEntry ?? target.entry : undefined;
@@ -111,6 +126,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     selectionVersion.current++;
     setLoadingSessionId(null);
     activeSessionIdRef.current = session?.id ?? null;
+    activeSessionRef.current = session;
     setActiveSession(session);
   };
 
@@ -137,7 +153,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
       }
       setIsLoading(false);
     });
-    return () => { mounted = false; mountedRef.current = false; historyWritable.current = false; selectionVersion.current++; };
+    return () => { mounted = false; mountedRef.current = false; selectionVersion.current++; };
   }, []);
 
   const filteredSessions = useMemo(() => {
@@ -162,22 +178,101 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     setUnverifiedPage(page => Math.min(page, Math.max(0, Math.ceil(unverifiedSessions.length / 50) - 1)));
   }, [filteredSessions.length, unverifiedSessions.length]);
 
+  const updateSaveStatus = useCallback(() => {
+    if (mountedRef.current) setSaveStatus({ pending: pendingSaves.current.size,
+      failed: [...pendingSaves.current.values()].filter(value => value.failed).length });
+  }, []);
+
+  const startPendingSave = useCallback(function savePending(id: string) {
+    const pending = pendingSaves.current.get(id);
+    if (!pending || pending.saving) return;
+    if (!historyWritable.current) {
+      pending.failed = true;
+      updateSaveStatus();
+      return;
+    }
+    const version = pending.version;
+    pending.saving = true;
+    pending.failed = false;
+    updateSaveStatus();
+    void persistReviseSessionMutation(pending.mutation).catch(error => ({ persisted: false, error })).then(result => {
+      if (pendingSaves.current.get(id) !== pending) return;
+      pending.saving = false;
+      if (pending.version !== version) {
+        // New edits include all fields not yet acknowledged, even if the older
+        // write failed. Never let a metadata-only save forget an unsaved body.
+        savePending(id);
+        return;
+      }
+      if (result.persisted) pendingSaves.current.delete(id);
+      else {
+        pending.failed = true;
+        console.warn('Failed to save revision history:', result.error);
+        if (mountedRef.current) st_echo('warning', 'Revision history could not be saved. Keep this popup open and retry after checking browser storage.');
+      }
+      updateSaveStatus();
+    });
+  }, [updateSaveStatus]);
+
+  const readSessionBody = useCallback(async (session: ReviseSession) => {
+    const retained = pendingSaves.current.get(session.id);
+    if (retained?.mutation.type === 'delete') throw new Error('This session was deleted.');
+    if (retained?.body && retained.body.messagesLoaded !== false) return retained.body;
+    const loaded = await sessionBody(session);
+    const latest = pendingSaves.current.get(session.id);
+    if (latest?.mutation.type === 'delete') throw new Error('This session was deleted.');
+    if (latest?.body && latest.body.messagesLoaded !== false) return latest.body;
+    return latest?.mutation.type === 'patch' ? { ...loaded, ...latest.mutation.changes, id: loaded.id } : loaded;
+  }, []);
+
   const saveMutation = useCallback((mutation: ReviseSessionMutation) => {
     if (!mountedRef.current) return;
+    const id = mutation.type === 'create' ? mutation.session.id : mutation.sessionId;
+    const previous = pendingSaves.current.get(id);
+    if (previous?.mutation.type === 'delete' && mutation.type !== 'delete') return;
+    const base = previous?.body ?? (activeSessionRef.current?.id === id ? activeSessionRef.current : undefined)
+      ?? sessionsRef.current.find(session => session.id === id);
+    const body = mutation.type === 'create' ? mutation.session : mutation.type === 'patch' && base
+      ? { ...base, ...mutation.changes, id, ...(mutation.changes.messages ? { messagesLoaded: undefined } : {}) } : base;
+    let combined = mutation;
+    if (mutation.type === 'patch' && previous?.mutation.type === 'create' && body) {
+      combined = { type: 'create', session: body };
+    } else if (mutation.type === 'patch' && previous?.mutation.type === 'patch') {
+      combined = { ...mutation, changes: { ...previous.mutation.changes, ...mutation.changes } };
+    }
+    const pending: PendingRevisionSave = previous ?? { mutation: combined, version: 0, saving: false, failed: false };
+    pending.mutation = combined;
+    pending.body = body;
+    pending.version++;
+    pending.failed = false;
+    pendingSaves.current.set(id, pending);
     const updatedSessions = applyReviseSessionMutation(sessionsRef.current, mutation).map(revisionSessionHeader);
     sessionsRef.current = updatedSessions;
     setAllSessions(updatedSessions);
-    if (!historyWritable.current) {
-      st_echo('warning', 'Revision history has not been saved. Reopen this popup after browser storage is available.');
-      return;
+    if (mutation.type === 'patch' && activeSessionIdRef.current === id && body) {
+      activeSessionRef.current = body;
+      setActiveSession(body);
     }
-    void persistReviseSessionMutation(mutation).then((result) => {
-      if (!result.persisted) {
-        console.warn('Failed to save revision history:', result.error);
-        st_echo('warning', 'Revision history could not be saved. Keep this popup open and check browser storage.');
+    updateSaveStatus();
+    startPendingSave(id);
+  }, [startPendingSave, updateSaveStatus]);
+
+  const retryPendingSaves = async () => {
+    if (!historyWritable.current) {
+      const loaded = await loadReviseSessions(undefined, undefined, { headersOnly: true });
+      if (!mountedRef.current) return;
+      historyWritable.current = loaded.writable;
+      if (!loaded.writable) {
+        st_echo('warning', 'Revision storage is still unavailable. Unsaved history remains in this popup.');
+        return;
       }
-    });
-  }, []);
+      let refreshed = loaded.value;
+      for (const { mutation } of pendingSaves.current.values()) refreshed = applyReviseSessionMutation(refreshed, mutation);
+      sessionsRef.current = refreshed.map(revisionSessionHeader);
+      setAllSessions(sessionsRef.current);
+    }
+    for (const id of pendingSaves.current.keys()) startPendingSave(id);
+  };
 
   const ensureEntryIdentity = async (): Promise<WIEntry | undefined> => {
     if (target.type !== 'entry' || !currentEntry) return undefined;
@@ -251,8 +346,9 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     const version = ++selectionVersion.current;
     setLoadingSessionId(session.id);
     try {
-      const body = await sessionBody(session);
-      if (mountedRef.current && version === selectionVersion.current) selectSession(body);
+      const body = await readSessionBody(session);
+      if (mountedRef.current && version === selectionVersion.current
+        && sessionsRef.current.some(current => current.id === session.id)) selectSession(body);
     } catch (error) {
       if (mountedRef.current && version === selectionVersion.current) {
         setLoadingSessionId(null);
@@ -263,17 +359,16 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
 
   const handleDeleteSession = async (sessionId: string) => {
     const confirm = await globalContext.Popup.show.confirm('Delete Session', 'Are you sure? This cannot be undone.');
-    if (confirm) {
+    if (confirm && mountedRef.current) {
+      selectionVersion.current++;
+      setLoadingSessionId(null);
+      if (activeSessionIdRef.current === sessionId) selectSession(null);
       saveMutation({ type: 'delete', sessionId });
     }
   };
 
   const handleSessionUpdate = useCallback((sessionId: string, changes: Partial<ReviseSession>) => {
     saveMutation({ type: 'patch', sessionId, changes });
-    // Completing a request for a departed session must never navigate back to it.
-    if (mountedRef.current && activeSessionIdRef.current === sessionId) {
-      setActiveSession((current) => current?.id === sessionId ? { ...current, ...changes } : current);
-    }
   }, [saveMutation]);
 
   const handleRecoverSession = async (session: ReviseSession) => {
@@ -285,7 +380,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     try {
       const identified = await ensureEntryIdentity();
       if (!identified || !mountedRef.current) return;
-      const original = await sessionBody(session);
+      const original = await readSessionBody(session);
       if (!mountedRef.current) return;
       const recovered = { ...structuredClone(original), id: `rs-${createRevisionId()}`,
         name: `${session.name} (recovered)`, createdAt: new Date().toISOString(),
@@ -326,6 +421,11 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     onClose();
   };
 
+  const saveNotice = saveStatus.failed > 0 && <div className="revision-save-warning" role="status">
+    <p>Revision history has unsaved changes. Keep this popup open until saving succeeds; you can safely return to the session list.</p>
+    <STButton onClick={retryPendingSaves}>Retry saving history</STButton>
+  </div>;
+
   if (activeSession) {
     const currentSettings = settingsManager.getSettings();
     const effectiveProfileId = currentSettings.profileId || activeSession.profileId;
@@ -349,7 +449,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     }
 
     return (
-      <ReviseSessionChat
+      <>{saveNotice}<ReviseSessionChat
         key={activeSession.id}
         session={activeSession}
         onBack={() => selectSession(null)}
@@ -357,7 +457,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
         onSessionUpdate={handleSessionUpdate}
         initialState={initialState}
         chatContextOptions={chatContextOptions}
-      />
+      /></>
     );
   }
 
@@ -365,6 +465,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
 
   return (
     <div className="revise-session-manager">
+      {saveNotice}
       <div className="popup_header">
         <h2>{title}</h2>
       </div>
@@ -404,7 +505,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
           {unverifiedSessions.slice(unverifiedPage * 50, (unverifiedPage + 1) * 50).map((session) => (
             <div key={session.id} className="unverified-session-item">
               <strong>{session.name}</strong>
-              <RevisionHistoryPreview session={session} />
+              <RevisionHistoryPreview session={session} loadBody={readSessionBody} />
               <STButton onClick={() => handleRecoverSession(session)} disabled={isIdentifying} title="Attach a copy of verified history">
                 Attach history
               </STButton>

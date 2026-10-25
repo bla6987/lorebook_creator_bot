@@ -68,3 +68,16 @@ The custom API settings, prompt preview, mobile layout, extended lorebook fields
 Lorebook saves now use immediate writes and verify the server's saved data. Failed saves keep suggestions and editor drafts available for retry; saving one entry preserves other edits and pending deletions. Revision history survives entry renames, and leaving a revision chat cancels its request so a late response cannot overwrite newer work.
 
 This update also sanitizes suggestion HTML, fixes cross-lorebook revision identities, hardens XML and native structured responses, protects existing presets, and removes local history snapshots from outgoing requests. The [21-issue fix and verification checklist](docs/2026-10-14-audit-fixes.md) records the implementation and regression coverage.
+
+## Memory improvements in 0.3.0
+
+Revision history lists load small headers and fetch a conversation only when it is opened. Lists, revision messages, saved-history previews, and editor entries show 50 items per page while keeping all entries available to navigation, search, and bulk operations. Collapsed initial context and saved-state previews do not render their full contents.
+
+Global revisions store a full checkpoint every 12 state changes, with intermediate changes storing only replaced entries and their order. Unchanged lorebook entries are shared in editor drafts and revision states. Existing full-snapshot histories are compacted when loaded; original creation records remain intact. Outgoing LLM messages contain only role/content, never checkpoint or delta metadata. Compare, apply, regeneration, and branching reconstruct the selected state from its checkpoint.
+
+Autosaves keep at most one active write and one latest queued value per storage key. Revision sessions also coalesce UI saves. Session reads wait for known queued writes, and an unsaved body stays available across Back/reopen until its save succeeds. Failed saves show a Retry action; keep the popup open until saving succeeds. A later settings-only edit cannot discard an earlier unsaved message history.
+
+These changes use SillyTavern's existing storage and work without Runtime Signal Bus or any other optional extension. Browser-local history is still not synced between devices. They reduce retained copies and rendered items; exact Firefox memory use depends on the loaded chats, images, and other extensions.
+
+Development checks: `npm ci`, `npm test -- --run`, and `npm run build`. The shipped `dist/index.js` is built from the tested TypeScript source by CI.
+

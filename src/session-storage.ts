@@ -27,6 +27,27 @@ function ordered<T>(storage: SessionStorage, key: string, action: () => Promise<
   return pending;
 }
 
+/** Read after every operation already queued for this key. Call this outside
+ * an ordered callback: queueing a second read from inside itself would deadlock.
+ */
+export function readSessionRecord<T>(key: string, storage?: SessionStorage): Promise<T | null> {
+  storage ??= getStorage();
+  const db = storage;
+  return ordered(db, key, () => db.getItem<T>(key));
+}
+
+/** Finish the writes known at this boundary before enumerating record keys.
+ * A first pending field must exist on disk before a lazy loader lists its keys.
+ * The last promise for a key already includes its older queued operations.
+ * Failures propagate so a loader cannot present stale disk data as a fresh save.
+ * This barrier itself is never added to a key's queue.
+ */
+export async function flushSessionWrites(storage?: SessionStorage): Promise<void> {
+  storage ??= getStorage();
+  const pending = [...(queues.get(storage)?.values() ?? [])];
+  await Promise.all(pending);
+}
+
 export async function loadSession<T>(
   key: string, empty: T, validate: (value: unknown) => T,
   storage?: SessionStorage, legacy?: LegacyStorage,

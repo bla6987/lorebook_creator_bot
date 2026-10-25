@@ -1,6 +1,6 @@
 import type { ReviseSession } from './revise-types.js';
 import { compactRevisionMessages } from './revision-state.js';
-import { loadSession, saveSession, saveLatestSession, type SessionStorage, type LegacyStorage } from './session-storage.js';
+import { loadSession, readSessionRecord, flushSessionWrites, saveSession, saveLatestSession, type SessionStorage, type LegacyStorage } from './session-storage.js';
 
 export const getReviseEntryIdentifier = (worldName: string, uid: number) => JSON.stringify([worldName, uid]);
 
@@ -84,7 +84,7 @@ export async function loadReviseSessions(
     if (result.value.length > 0) {
       for (const session of result.value) {
         const key = recordKey(session.id, '$create');
-        const existing = await db.getItem<{ value: unknown }>(key);
+        const existing = await readSessionRecord<{ value: unknown }>(key, db);
         if (existing === null) {
           const saved = await saveSession(key, { value: session }, db);
           if (!saved.persisted) throw saved.error;
@@ -96,6 +96,7 @@ export async function loadReviseSessions(
       const released = await saveSession(REVISE_SESSIONS_KEY, [], db);
       if (!released.persisted) throw released.error;
     }
+    await flushSessionWrites(db);
     const keys = (await db.keys()).filter((key) => key.startsWith(RECORD_PREFIX));
     const addresses = keys.map((key) => {
       const address: unknown = JSON.parse(key.slice(RECORD_PREFIX.length));
@@ -106,13 +107,13 @@ export async function loadReviseSessions(
     });
     const deleted = new Set<string>();
     await Promise.all(addresses.filter(({ address }) => address[1] === '$deleted').map(async ({ key, address }) => {
-      const record = await db.getItem<{ value: unknown }>(key);
+      const record = await readSessionRecord<{ value: unknown }>(key, db);
       if (record?.value !== true) throw new Error('Invalid revision session deletion record');
       deleted.add(address[0]);
     }));
     await removeDeletedPayloads(db, deleted, keys);
     // Header reads never touch current message records. Older creation records
-    // are indexed one at a time, so the first upgrade also has bounded residency.
+    // are indexed one at a time instead of loading every history concurrently.
     // Keep original creation records intact: failed indexing cannot lose history.
     const bySession = new Map<string, string[]>();
     for (const { address: [id, field] } of addresses) {
@@ -124,15 +125,19 @@ export async function loadReviseSessions(
     for (const [id, available] of bySession) {
       if (!available.includes('$create')) continue;
       let session: ReviseSession | undefined;
-      if (options.headersOnly && available.includes('$header')) {
-        const record = await db.getItem<{ value: unknown }>(recordKey(id, '$header'));
+      // A current messages field supersedes the immutable creation history.
+      // Reuse its compact header for full selection too, avoiding a second
+      // (possibly huge legacy) history read that would immediately be replaced.
+      const useHeader = options.headersOnly || available.includes('messages');
+      if (useHeader && available.includes('$header')) {
+        const record = await readSessionRecord<{ value: unknown }>(recordKey(id, '$header'), db);
         try {
           [session] = validateSessions([record?.value]);
           if (session.id !== id || session.messagesLoaded !== false) session = undefined;
         } catch { /* Rebuild a damaged derived header from its intact source. */ }
       }
       if (!session) {
-        const record = await db.getItem<{ value: unknown }>(recordKey(id, '$create'));
+        const record = await readSessionRecord<{ value: unknown }>(recordKey(id, '$create'), db);
         [session] = validateSessions([record?.value]);
         if (session.id !== id) throw new Error('Revision session record ID mismatch');
         if (options.headersOnly) {
@@ -143,7 +148,7 @@ export async function loadReviseSessions(
       }
       for (const field of available) {
         if (!fields.has(field as keyof ReviseSession) || options.headersOnly && field === 'messages') continue;
-        const record = await db.getItem<{ value: unknown }>(recordKey(id, field));
+        const record = await readSessionRecord<{ value: unknown }>(recordKey(id, field), db);
         if (!record) throw new Error('Invalid revision session record; the original data has been retained');
         session = { ...session, [field]: record.value };
       }
@@ -180,6 +185,7 @@ export async function persistReviseSessionMutation(mutation: ReviseSessionMutati
       await saveSession(recordKey(created.id, '$header'), { value: revisionSessionHeader(created) }, db);
     }
     if (mutation.type === 'delete' && results.every((result) => result.persisted)) {
+      await flushSessionWrites(db);
       await removeDeletedPayloads(db, new Set([mutation.sessionId]), await db.keys());
     }
     return results.find((result) => !result.persisted) ?? { persisted: true };
