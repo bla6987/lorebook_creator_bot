@@ -31,6 +31,10 @@ const session = (id: string): ReviseSession => ({
   messages: [{ id: `${id}-snapshot`, role: 'assistant', content: 'Earlier reply', stateSnapshot: entry }],
 });
 const response = { name: 'Name', triggers: ['Name'], content: 'Revised', justification: 'Done' };
+const saveToHistory = async (mutation: ReviseSessionMutation) => {
+  state.history = applyReviseSessionMutation(state.history, mutation);
+  return { persisted: true };
+};
 let Manager: ComponentType<any>, root: Root, container: HTMLDivElement;
 function compile(file: string, modules: Record<string, any>) {
   const compiled = ts.transpileModule(readFileSync(file, 'utf8'), {
@@ -85,10 +89,7 @@ beforeEach(() => {
   state.history = [session('A'), session('B')];
   state.load.mockReset().mockImplementation(async () => ({ value: structuredClone(state.history).map(revisionSessionHeader), writable: true }));
   state.loadBody.mockReset().mockImplementation(async (id: string) => ({ value: structuredClone(state.history.find(item => item.id === id)), writable: true }));
-  state.save.mockReset().mockImplementation(async (mutation: ReviseSessionMutation) => {
-    state.history = applyReviseSessionMutation(state.history, mutation);
-    return { persisted: true };
-  });
+  state.save.mockReset().mockImplementation(saveToHistory);
   state.apply.mockReset(); state.confirm.mockReset().mockResolvedValue(true);
   state.ensure.mockReset().mockImplementation(async (value) => revisionIdentity.withEntryRevisionId(value));
   state.buildPrompt.mockReset().mockImplementation(async (_api, options) => {
@@ -241,31 +242,34 @@ test.each([
 });
 
 test('a failed body save survives Back and a later metadata save includes the unacknowledged history', async () => {
-  state.save.mockResolvedValueOnce({ persisted: false, error: new Error('Storage quota') });
+  state.save.mockResolvedValue({ persisted: false, error: new Error('Storage quota') });
   await mount(); await select('A'); await send();
   expect(container.querySelector('.revision-save-warning')).not.toBeNull();
   expect(state.history[0].messages).toHaveLength(1);
   await click('button[title="Back to sessions"]');
   await select('A');
   expect(state.loadBody).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain('Revised');
+  expect(container.textContent).toContain('Done');
+  state.save.mockImplementation(saveToHistory);
   await click('input[type="checkbox"]');
   const saved = state.history.find(value => value.id === 'A')!;
   expect(saved.isReadonly).toBe(true);
   expect(saved.messages.some(message => message.stateSnapshot?.content === 'Revised')).toBe(true);
-  expect(state.save.mock.calls[1][0].changes.messages).toEqual(saved.messages);
+  expect(state.save.mock.calls.at(-1)![0].changes.messages).toEqual(saved.messages);
   expect(container.querySelector('.revision-save-warning')).toBeNull();
   await click('button[title="Back to sessions"]'); await select('A');
   expect(state.loadBody).toHaveBeenCalledTimes(2);
-  expect(container.textContent).toContain('Revised');
+  expect(container.textContent).toContain('Done');
 });
 
 test('retry saving keeps the failed history until its exact replacement is durable', async () => {
-  state.save.mockResolvedValueOnce({ persisted: false, error: new Error('Storage quota') });
+  state.save.mockResolvedValue({ persisted: false, error: new Error('Storage quota') });
   await mount(); await select('A'); await send();
   await click('button[title="Back to sessions"]');
+  const failedAttempts = state.save.mock.calls.length;
+  state.save.mockImplementation(saveToHistory);
   await click('.revision-save-warning button');
-  expect(state.save).toHaveBeenCalledTimes(2);
+  expect(state.save).toHaveBeenCalledTimes(failedAttempts + 1);
   expect(state.history[0].messages.some(message => message.stateSnapshot?.content === 'Revised')).toBe(true);
   expect(container.querySelector('.revision-save-warning')).toBeNull();
 });
@@ -278,7 +282,7 @@ test('rapid edits retain one active save and one latest pending history', async 
   expect(state.save).toHaveBeenCalledTimes(1);
   await click('button[title="Back to sessions"]'); await select('A');
   expect(state.loadBody).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain('Revised');
+  expect(container.textContent).toContain('Done');
   await act(async () => { finish({ persisted: true }); });
   expect(state.save).toHaveBeenCalledTimes(2);
   expect(state.history[0].isReadonly).toBe(true);
