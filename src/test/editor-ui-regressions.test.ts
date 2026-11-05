@@ -22,6 +22,7 @@ const entry = (uid: number, comment: string): ExtendedWIEntry => ({
   disable: false,
 });
 const seedEntries = () => ({ A: [entry(0, 'A zero'), entry(1, 'A one')], B: [entry(0, 'B zero'), entry(1, 'B one')] });
+const diskBooks = new Map<string, any>();
 const captures: Record<string, any> = {};
 const state = {
   session: {} as any,
@@ -151,7 +152,7 @@ beforeAll(() => {
     '../hooks/useForceUpdate.js': { useForceUpdate: () => noop },
     '../message-ranges.js': messageRanges,
     '../revise-entry-identity.js': revisionIdentity,
-    '../world-info-save.js': { saveWorldInfoChecked: saveWorld },
+    '../world-info-save.js': { loadWorldInfoFresh: async (name: string) => structuredClone(diskBooks.get(name) ?? { entries: Object.fromEntries((state.entries[name as keyof typeof state.entries] || []).map(entry => [entry.uid, entry])) }), saveWorldInfoChecked: async (name: string, data: any) => { await saveWorld(name, data); diskBooks.set(name, structuredClone(data)); } },
     '../revise-session-storage.js': { relocateEntryRevisionSessions: relocateHistory },
     './SuggestedEntry.js': { SuggestedEntry: capture('suggestion') },
     './SelectEntriesPopup.js': { SelectEntriesPopup: noop },
@@ -188,6 +189,7 @@ beforeEach(() => {
   state.realEditor = false;
   confirm.mockResolvedValue(true);
   saveWorld.mockResolvedValue(undefined);
+  diskBooks.clear();
   loadWorld.mockResolvedValue(null);
   sanitize.mockImplementation(() => '<strong>Sanitized</strong>');
   container = document.createElement('div');
@@ -1060,4 +1062,128 @@ test.each(['single', 'all'])('%s completion consumes a suggestion stamped during
   });
   expect(saveWorld).toHaveBeenCalledTimes(1);
   expect(saveMain.mock.calls.at(-1)![1].suggestedEntries.A).toHaveLength(0);
+});
+
+function countingEditor() {
+  const renders = new Map<number, number>();
+  const Editor = compile('src/components/LorebookEditor.tsx', {
+    './ReviseSessionManager.js': { ReviseSessionManager: capture('revision') },
+    './lorebookEditorUtils.js': {
+      ...utils,
+      getActivationMode: (item: ExtendedWIEntry) => {
+        renders.set(item.uid, (renders.get(item.uid) ?? 0) + 1);
+        return utils.getActivationMode(item);
+      },
+    },
+  }).LorebookEditor;
+  return { Editor, renders };
+}
+const bigBookProps = () => ({
+  entriesGroupByWorldName: { Big: Array.from({ length: 60 }, (_, uid) => entry(uid, `Entry ${uid}`)) },
+  onSaveEntries: vi.fn().mockResolvedValue(undefined),
+  onReplaceWorldEntries: vi.fn().mockResolvedValue(undefined),
+  onRefreshEntries: noop,
+  sessionForContext: {},
+  contextToSend: {},
+});
+const card = (uid: number) => container.querySelector(`article[data-uid="${uid}"]`) as HTMLElement;
+const cardTitle = (uid: number) => card(uid).querySelector('.entry-title-input') as HTMLInputElement;
+const cardCheckbox = (uid: number) => card(uid).querySelector('input[type="checkbox"]') as HTMLInputElement;
+const cardButton = (uid: number, label: string) =>
+  [...card(uid).querySelectorAll('button')].find((item) => item.textContent?.trim() === label)!;
+const cardSelect = (uid: number, labelText: string) =>
+  [...card(uid).querySelectorAll('label')].find((item) => item.textContent?.startsWith(labelText))!.querySelector('select')!;
+async function choose(element: HTMLSelectElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(element, value);
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+test('typing in or selecting one entry rerenders only that card', async () => {
+  const { Editor, renders } = countingEditor();
+  await mount(Editor, bigBookProps());
+  expect(container.querySelectorAll('article').length).toBe(50);
+
+  for (const value of ['t', 'ty', 'typ']) {
+    renders.clear();
+    await change(cardTitle(0), value);
+    expect(Object.fromEntries(renders)).toEqual({ 0: 1 });
+  }
+  expect(cardTitle(0).value).toBe('typ');
+  expect(card(0).textContent).toContain('Unsaved');
+  expect(card(1).textContent).not.toContain('Unsaved');
+
+  renders.clear();
+  await act(async () => cardCheckbox(3).click());
+  expect(Object.fromEntries(renders)).toEqual({ 3: 1 });
+  expect(cardCheckbox(3).checked).toBe(true);
+});
+
+test('memoized cards save, delete and revise the latest draft', async () => {
+  const { Editor } = countingEditor();
+  const props = bigBookProps();
+  await mount(Editor, props);
+  await change(cardTitle(0), 'latest title');
+
+  await act(async () => cardButton(0, 'Save Entry').click());
+  expect(props.onSaveEntries).toHaveBeenCalledTimes(1);
+  expect(props.onSaveEntries.mock.calls[0][1][0].entry.comment).toBe('latest title');
+
+  await change(cardTitle(0), 'newer title');
+  await act(async () => cardButton(0, 'AI Revise').click());
+  expect(captures.revision.initialState.comment).toBe('newer title');
+  await act(async () => captures.revision.onClose());
+
+  await act(async () => cardButton(0, 'Delete').click());
+  expect(confirm.mock.calls[0][1]).toContain('newer title');
+  expect(card(0)).toBeNull();
+});
+
+test('memoized cards apply bulk edits and categories to the latest selection', async () => {
+  const { Editor } = countingEditor();
+  await mount(Editor, bigBookProps());
+  await act(async () => cardCheckbox(1).click());
+  await act(async () => cardCheckbox(2).click());
+
+  await choose(cardSelect(1, 'Position'), '4');
+  expect(cardSelect(2, 'Position').value).toBe('4');
+  expect(cardSelect(3, 'Position').value).not.toBe('4');
+
+  await change(container.querySelector('input[placeholder="Name"]') as HTMLInputElement, 'People');
+  await click('Add');
+  const categoryId = [...cardSelect(1, 'Category').options].find((option) => option.textContent === 'People')!.value;
+  await choose(cardSelect(1, 'Category'), categoryId);
+  expect(cardSelect(2, 'Category').value).toBe(categoryId);
+  expect(cardSelect(3, 'Category').value).toBe('');
+});
+
+test('memoized cards select shift ranges from the latest sort order', async () => {
+  const { Editor } = countingEditor();
+  await mount(Editor, bigBookProps());
+  const sort = [...container.querySelectorAll('label')].find((item) => item.textContent?.startsWith('Sort'))!.querySelector('select')!;
+  await choose(sort, 'uid-desc');
+  await act(async () => cardCheckbox(59).click());
+  await act(async () => {
+    cardCheckbox(55).dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+  });
+  expect([59, 58, 57, 56, 55].every((uid) => cardCheckbox(uid).checked)).toBe(true);
+  expect(cardCheckbox(54).checked).toBe(false);
+});
+
+test('editor Save Entry merges an external edit and newly added entry from disk', async () => {
+ await mount(MainPopup);await click('Lorebook Editor');
+ diskBooks.set('A',{entries:{0:entry(0,'A zero'),1:entry(1,'external change'),2:entry(2,'external new')}});
+ await act(async()=>{await captures.editor.onSaveEntries('A',[{entry:entry(0,'local change'),originalUid:0}]);});
+ const saved=saveWorld.mock.calls[0][1].entries;
+ expect(saved[0].comment).toBe('local change');expect(saved[1].comment).toBe('external change');expect(saved[2].comment).toBe('external new');
+});
+test('Global Revise deletions remain explicit suggestions and delete only on Apply', async () => {
+ state.metadata={world_info:'A',worldInfoRecommender_chatBookOwner:'chat'};
+ state.session={selectedWorldNames:['A'],selectedEntryUids:{A:[0,1]},suggestedEntries:{}};
+ await mount(MainPopup);await click('Global Revise');
+ await act(async()=>{captures.globalRevision.onApply({A:[entry(1,'A one')]});});
+ const suggestion=captures['suggestion:A'];expect(suggestion.entry.comment).toContain('[Delete entry]');expect(saveWorld).not.toHaveBeenCalled();
+ await act(async()=>{await suggestion.onAdd(suggestion.entry,'A','A');});
+ expect(saveWorld.mock.calls[0][1].entries[0]).toBeUndefined();expect(saveWorld.mock.calls[0][1].entries[1].comment).toBe('A one');
 });

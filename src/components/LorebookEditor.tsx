@@ -1,4 +1,4 @@
-import { ChangeEvent, CSSProperties, FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, CSSProperties, FC, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Popup, STButton } from 'sillytavern-utils-lib/components/react';
 import { st_echo } from 'sillytavern-utils-lib/config';
 import { ExtendedWIEntry, SaveEntryPayload } from '../types.js';
@@ -41,6 +41,8 @@ const CATEGORY_STORAGE_KEY = 'worldInfoRecommender.lorebookEditor.categories';
 const VIEW_MODE_STORAGE_KEY = 'worldInfoRecommender.lorebookEditor.viewMode';
 const SELECTED_WORLD_STORAGE_KEY = 'worldInfoRecommender.lorebookEditor.selectedWorld';
 const SORT_STORAGE_KEY = 'worldInfoRecommender.lorebookEditor.sort';
+
+const EMPTY_CATEGORY_STATE: LorebookCategoryStorage[string] = { categories: [], entryAssignments: {} };
 
 type ViewMode = 'card' | 'compact';
 
@@ -104,7 +106,14 @@ const categoryStyle = (category?: LorebookCategory): CSSProperties | undefined =
   return { '--lorebook-category-color': category.color } as CSSProperties;
 };
 
-const EntryEditor: FC<EntryEditorProps> = ({
+/** A callback whose identity never changes, so memoized cards skip it, but which runs the latest render's handler. */
+const useStableHandler = <Args extends unknown[], Result>(handler: (...args: Args) => Result) => {
+  const latest = useRef(handler);
+  latest.current = handler;
+  return useCallback((...args: Args) => latest.current(...args), []);
+};
+
+const EntryEditor = memo<EntryEditorProps>(function EntryEditor({
   entry,
   worldName,
   viewMode,
@@ -119,7 +128,7 @@ const EntryEditor: FC<EntryEditorProps> = ({
   onSave,
   onDelete,
   onRevise,
-}) => {
+}) {
   const selectedCategory = categories.find((category) => category.id === categoryId);
   const activationMode = getActivationMode(entry);
   const isCompact = viewMode === 'compact';
@@ -294,7 +303,7 @@ const EntryEditor: FC<EntryEditorProps> = ({
       </div>
     </article>
   );
-};
+});
 
 export const LorebookEditor: FC<LorebookEditorProps> = ({
   entriesGroupByWorldName,
@@ -449,7 +458,7 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     [deletedIds, draftEntries, selectedWorldName],
   );
 
-  const activeCategoryState = categoryStorage[selectedWorldName] ?? { categories: [], entryAssignments: {} };
+  const activeCategoryState = categoryStorage[selectedWorldName] ?? EMPTY_CATEGORY_STATE;
   const activeCategories = activeCategoryState.categories;
   const activeAssignments = activeCategoryState.entryAssignments;
 
@@ -865,6 +874,13 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
     st_echo('success', `Applied AI revision to "${normalizedEntry.comment || `UID ${normalizedEntry.uid}`}".`);
   };
 
+  const stableToggleSelected = useStableHandler(handleToggleSelected);
+  const stableEntryChange = useStableHandler(updateEntryWithSelection);
+  const stableEntryCategoryChange = useStableHandler(handleEntryCategoryChange);
+  const stableSaveEntry = useStableHandler(handleSaveEntry);
+  const stableDeleteEntry = useStableHandler(handleDeleteEntry);
+  const handleReviseEntry = useCallback((worldName: string, uid: number) => setReviseTarget({ worldName, uid }), []);
+
   if (worldNames.length === 0) {
     return (
       <div className="lorebook-editor empty-state">
@@ -1154,12 +1170,12 @@ export const LorebookEditor: FC<LorebookEditorProps> = ({
                 isSaving={isSaving}
                 categoryId={activeAssignments[String(entry.uid)] ?? ''}
                 categories={activeCategories}
-                onToggleSelected={handleToggleSelected}
-                onChange={updateEntryWithSelection}
-                onCategoryChange={handleEntryCategoryChange}
-                onSave={handleSaveEntry}
-                onDelete={handleDeleteEntry}
-                onRevise={(worldName, uid) => setReviseTarget({ worldName, uid })}
+                onToggleSelected={stableToggleSelected}
+                onChange={stableEntryChange}
+                onCategoryChange={stableEntryCategoryChange}
+                onSave={stableSaveEntry}
+                onDelete={stableDeleteEntry}
+                onRevise={handleReviseEntry}
               />
             ))
           )}

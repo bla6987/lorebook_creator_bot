@@ -5,6 +5,7 @@ import ts from 'typescript';
 const cache = new Map<string, any>();
 const disk = new Map<string, any>();
 const fetchMock = vi.fn(), emit = vi.fn(), hostSave = vi.fn();
+let readFresh: typeof import('../world-info-save.js').loadWorldInfoFresh;
 let save: typeof import('../world-info-save.js').saveWorldInfoChecked;
 let pendingNativeSave: ReturnType<typeof setTimeout> | undefined;
 
@@ -18,6 +19,7 @@ beforeAll(() => {
     return { worldInfoCache: cache };
   }, exports);
   save = exports.saveWorldInfoChecked;
+  readFresh = exports.loadWorldInfoFresh;
 });
 
 beforeEach(() => {
@@ -155,4 +157,10 @@ test('failed verification releases the same-world queue for a successful retry',
   await expect(first).rejects.toThrow('HTTP 500');
   await second;
   expect(cache.get('A')).toEqual(data('retry'));
+});
+
+test('fresh reads ignore a stale host cache and reject missing books', async () => {
+ cache.set('A', data('stale'));disk.set('A',data('externally updated'));
+ expect((await readFresh('A')).entries[0].content).toBe('externally updated');
+ await expect(readFresh('missing')).rejects.toThrow('no longer exists');
 });

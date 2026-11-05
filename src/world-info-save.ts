@@ -98,3 +98,19 @@ async function saveWorldInfoImmediately(name: string, data: WorldInfoData): Prom
   }
   if (writeError) console.warn(`Lorebook "${name}" was verified on disk despite a host save error:`, writeError);
 }
+
+/** Read the server revision instead of the host's optimistic in-memory cache. */
+export async function loadWorldInfoFresh(name: string): Promise<WorldInfoData> {
+  const context = SillyTavern.getContext();
+  const response = await fetch('/api/worldinfo/get', {
+    method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name }), cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`Could not reload lorebook (HTTP ${response.status})`);
+  const data = await response.json();
+  if (!data?.entries || typeof data.entries !== 'object') throw new Error('Invalid lorebook response');
+  if (!Object.keys(data.entries).length) {
+    const listing = await fetch('/api/worldinfo/list', { method: 'POST', headers: context.getRequestHeaders(), body: '{}', cache: 'no-store' });
+    if (!listing.ok || !(await listing.json()).some((world: { file_id: string }) => world.file_id === name)) throw new Error('The lorebook no longer exists');
+  }
+  return data;
+}

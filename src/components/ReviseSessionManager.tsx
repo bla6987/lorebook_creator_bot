@@ -445,6 +445,7 @@ export const ReviseSessionManager: FC<ReviseSessionManagerProps> = ({
     const profile = getRuntimeConnectionProfile(effectiveProfileId);
     const msgContext = contextToSend.messages;
     const chatContextOptions: BuildPromptOptions = {
+      maxContext: currentSettings.maxContextType === 'custom' ? currentSettings.maxContextValue : currentSettings.maxContextType === 'profile' ? 'preset' : 'active',
       targetCharacterId: this_chid,
       ignoreCharacterFields: !contextToSend.charCard,
       ignoreWorldInfo: true,

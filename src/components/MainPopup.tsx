@@ -46,7 +46,7 @@ import {
 } from './lorebookEditorUtils.js';
 import { WorldInfoRecommenderSettings } from './Settings.js';
 import { loadMainSession, saveMainSession } from '../main-session-storage.js';
-import { saveWorldInfoChecked } from '../world-info-save.js';
+import { saveWorldInfoChecked, loadWorldInfoFresh } from '../world-info-save.js';
 import { getMessageIndexes } from '../message-ranges.js';
 import { createRevisionId, getEntryRevisionId, withEntryRevisionId } from '../revise-entry-identity.js';
 import { relocateEntryRevisionSessions } from '../revise-session-storage.js';
@@ -132,6 +132,12 @@ const applyEntryToWorld = (
   entry: ExtendedWIEntry,
 ): 'added' | 'updated' | 'unchanged' => {
   const existingEntry = worldEntries.find((e) => e.uid === entry.uid);
+  if ((entry as ExtendedWIEntry & { _wircDelete?: boolean })._wircDelete) {
+    if ((entry as any)._wircDeleteWorld !== worldName) throw new Error('Apply a deletion to its original lorebook');
+    if (!existingEntry) return 'unchanged';
+    worldEntries.splice(worldEntries.indexOf(existingEntry), 1);
+    return 'updated';
+  }
   if (existingEntry) {
     const needsRevisionId = !!getEntryRevisionId(entry) && !getEntryRevisionId(existingEntry);
     if (!hasEntryChanges(entry, existingEntry) && !needsRevisionId) return 'unchanged';
@@ -494,6 +500,8 @@ export const MainPopup: FC = () => {
   const resolveOrCreateChatLorebook = useCallback(async (): Promise<string | null> => {
     const context = getChatContext();
     const chatId = context.getCurrentChatId?.();
+    const owner = JSON.stringify([(context as any).groupId, (context as any).characters?.[(context as any).characterId]?.avatar ?? (context as any).characterId, chatId]);
+    const isCurrent = () => { const current = getChatContext(); return JSON.stringify([(current as any).groupId, (current as any).characters?.[(current as any).characterId]?.avatar ?? (current as any).characterId, current.getCurrentChatId?.()]) === owner; };
     if (!chatId) {
       st_echo('warning', 'Open a chat first so a chat-specific lorebook can be created.');
       return null;
@@ -522,6 +530,7 @@ export const MainPopup: FC = () => {
       return null;
     }
 
+    if (!isCurrent()) { st_echo('warning', `Created "${worldName}" but the chat changed; it was left unbound.`); return null; }
     // Stamp ownership so this chat never forks its own freshly-created book.
     context.updateChatMetadata({ [WI_METADATA_KEY]: worldName, [WIRC_CHAT_BOOK_OWNER]: chatId }, false);
     await context.saveMetadata();
@@ -536,6 +545,8 @@ export const MainPopup: FC = () => {
   const forkChatLorebookForBranch = useCallback(
     async (sourceBook: string, chatId: string): Promise<{ name: string; baseEntries: ExtendedWIEntry[] } | null> => {
       const context = getChatContext();
+      const owner = JSON.stringify([(context as any).groupId, (context as any).characters?.[(context as any).characterId]?.avatar ?? (context as any).characterId, context.getCurrentChatId?.()]);
+      const isCurrent = () => { const current = getChatContext(); return JSON.stringify([(current as any).groupId, (current as any).characters?.[(current as any).characterId]?.avatar ?? (current as any).characterId, current.getCurrentChatId?.()]) === owner; };
 
       // Name = parent title (trailing branch suffix stripped) + this branch's label.
       const match = chatId.match(/(Branch|Checkpoint)\s*#?\s*(\d+)/i);
@@ -568,6 +579,7 @@ export const MainPopup: FC = () => {
         return null;
       }
 
+      if (!isCurrent()) { st_echo('warning', `Created "${worldName}" but the chat changed; it was left unbound.`); return null; }
       // Bind the branch to the new book and claim ownership (disables the parent here).
       context.updateChatMetadata({ [WI_METADATA_KEY]: worldName, [WIRC_CHAT_BOOK_OWNER]: chatId }, false);
       await context.saveMetadata();
@@ -676,11 +688,14 @@ export const MainPopup: FC = () => {
       enqueueWorldTransaction(worldName, async () => {
         const applicationKey = JSON.stringify([worldName, getSuggestionSnapshotKey(sourceWorld, entry)]);
         if (completedApplicationsRef.current.has(applicationKey)) return 'unchanged';
+        if ((entry as any)._wircDelete && worldName !== sourceWorld) throw new Error('Apply a deletion to its original lorebook');
         // Read only when this transaction begins, after earlier saves published.
         const sourceExists = (committedEntriesRef.current[sourceWorld] ?? []).some(
           (stored) => stored.uid === entry.uid,
         );
-        const worldEntries = structuredClone(committedEntriesRef.current[worldName] ?? []);
+        const latest = await loadWorldInfoFresh(worldName);
+        if (!latest?.entries) throw new Error('Could not reload the lorebook before saving');
+        const worldEntries = Object.values(latest.entries).map(entry => normalizeExtendedEntry(entry as ExtendedWIEntry));
         const candidate = suggestionForTarget(entry, sourceExists && sourceWorld !== worldName);
         const status = applyEntryToWorld(worldEntries, worldName, candidate);
         if (status !== 'unchanged') {
@@ -689,7 +704,7 @@ export const MainPopup: FC = () => {
           globalContext.reloadWorldInfoEditor(worldName, true);
         }
         completedApplicationsRef.current.add(applicationKey);
-        await relocateSuggestionHistory(sourceWorld, entry, worldName, worldEntries, !sourceExists);
+        if (!(entry as any)._wircDelete) await relocateSuggestionHistory(sourceWorld, entry, worldName, worldEntries, !sourceExists);
         return status;
       }),
     [enqueueWorldTransaction, publishWorldEntries],
@@ -970,7 +985,9 @@ export const MainPopup: FC = () => {
       for (const [worldName, worldTargets] of targetsByWorld) {
         try {
           const pending = await enqueueWorldTransaction(worldName, async () => {
-            const entries = structuredClone(committedEntriesRef.current[worldName] ?? []);
+            const latest = await loadWorldInfoFresh(worldName);
+            if (!latest?.entries) throw new Error('Could not reload the lorebook before saving');
+            const entries = Object.values(latest.entries).map(entry => normalizeExtendedEntry(entry as ExtendedWIEntry));
             const results: {
               target: (typeof targets)[number];
               status: 'added' | 'updated' | 'unchanged';
@@ -1191,7 +1208,9 @@ export const MainPopup: FC = () => {
   const handleSaveEditorEntries = useCallback(
     async (worldName: string, payloads: SaveEntryPayload[]) =>
       enqueueWorldTransaction(worldName, async () => {
-        const worldEntries = structuredClone(committedEntriesRef.current[worldName] ?? []);
+        const latest = await loadWorldInfoFresh(worldName);
+        if (!latest?.entries) throw new Error('Could not reload the lorebook before saving');
+        const worldEntries = Object.values(latest.entries).map(entry => normalizeExtendedEntry(entry as ExtendedWIEntry));
         payloads.forEach(({ entry, originalUid }) => {
           const normalizedEntry = normalizeExtendedEntry(entry);
           const existingIndex = worldEntries.findIndex((item) => item.uid === originalUid);
@@ -1219,7 +1238,8 @@ export const MainPopup: FC = () => {
       await enqueueWorldTransaction(worldName, async () => {
         const previousByUid = new Map(baseline.map((entry) => [entry.uid, entry]));
         const submittedByUid = new Map(submitted.map((entry) => [entry.uid, entry]));
-        const merged = structuredClone(committedEntriesRef.current[worldName] ?? [])
+        const latest = await loadWorldInfoFresh(worldName);
+        const merged = Object.values(latest.entries).map(entry => normalizeExtendedEntry(entry as ExtendedWIEntry))
           .filter((entry) => !previousByUid.has(entry.uid) || submittedByUid.has(entry.uid))
           .map((entry) => {
             const updated = submittedByUid.get(entry.uid);
@@ -1327,6 +1347,13 @@ export const MainPopup: FC = () => {
       });
     });
 
+    for (const [worldName, originalEntries] of Object.entries(entriesGroupByWorldName)) {
+      if (!Object.hasOwn(newState, worldName)) continue;
+      const surviving = new Set(newState[worldName].map(entry => entry.uid));
+      for (const entry of originalEntries) if (!surviving.has(entry.uid)) {
+        (newSuggestedEntries[worldName] ??= []).push({ ...entry, comment: `[Delete entry] ${entry.comment}`, _wircDelete: true, _wircDeleteWorld: worldName } as ExtendedWIEntry);
+      }
+    }
     setSession((prev) => ({ ...prev, suggestedEntries: newSuggestedEntries }));
     st_echo('success', 'Changes from global revise session applied.');
   };
